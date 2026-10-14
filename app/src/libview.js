@@ -5,7 +5,7 @@
 // device's user bank. Lists are listboxes (arrows move, Enter loads or auditions); a library sound goes to a slot
 // and a slot to the library by a button or by dragging it across.
 
-import { CATEGORIES, devicePresetRows, engineLabel, engineOrder } from "./proto.js";
+import { engineAvailable, catalogLabel, CATEGORIES, devicePresetRows, engineLabel, engineOrder } from "./proto.js";
 import { $$, ENGINE_IC, el, ic } from "./dom.js";
 import { SORTS, fileSlug, slotName, today } from "./library.js";
 import { card, cells, help } from "./parts.js";
@@ -72,10 +72,10 @@ export function libraryScreen(root, ui, lib) {
     if (!p || !(p.state.caps & 8)) return null;
     const rows = devicePresetRows(dev.info, dev.names, p);
     const key = (r) => `${r.engine}:${r.preset}`;
-    const load = (k) => { const r = rows.find((x) => key(x) === k); if (!r || busy) return; run(() => (r.user ? dev.bankLoad(r.preset) : dev.loadPreset(r.engine, r.preset)), () => ui.say(tf("didLoad", r.name))); };
+    const load = (k) => { const r = rows.find((x) => key(x) === k); if (!r || r.unavailable || busy) return; run(() => (r.user ? dev.bankLoad(r.preset) : dev.loadPreset(r.engine, r.preset)), () => ui.say(tf("didLoad", r.name))); };
     const items = rows.map((r) => ({
       key: key(r), name: r.name,
-      cells: [el("span", { class: "tag", text: r.user ? slotName(r.preset) : dev.info.engines[r.engine] }), el("span", { text: r.name }),
+      cells: [el("span", { class: "tag", text: r.user ? slotName(r.preset) + (r.unavailable ? ` · N/A (${r.storedEngine})` : "") : catalogLabel(dev.info, r.engine) }), el("span", { text: r.name }),
         el("span", { class: "rowacts" },
           r.user ? null : el("button", { type: "button", class: "iconbtn sm", "aria-label": `${t("keep")}: ${r.name}`, disabled: busy,
             onclick: (e) => { e.stopPropagation(); run(() => dev.captureFactory(r.engine, r.preset), async (pt) => { if (pt) { await lib.add([pt]); ui.say(tf("didKeep", pt.name)); } }); } }, ic("symbol_download_as")),
@@ -114,7 +114,7 @@ export function libraryScreen(root, ui, lib) {
     const del = async (id) => { const p = lib.get(id); if (p && (await ui.confirm(`${t("delete")} ${p.name}?`))) { await lib.remove(id); libSel = null; } };
     const rows = v.map((p) => ({
       key: p.id, name: p.name, drag: ["text/x-felucca-lib", p.id],
-      cells: [el("span", { class: "tag", text: p.engineName || String(p.engine) }),
+      cells: [el("span", { class: "tag", text: dev && !dev.engineOk(p) ? `${p.engineName || ""} · N/A (${p.engine})` : dev && (dev.info.engineCatalog || p.engineIds === 64) ? catalogLabel(dev.info, p.engine) : p.engineName || String(p.engine) }),
         el("span", { class: "nm" }, p.pattern || p.grid ? ic("symbol_grid_nine") : null, document.createTextNode(p.name)),
         el("span", { class: "tag", text: p.tags.join(" ") })],
     }));
@@ -166,26 +166,26 @@ export function libraryScreen(root, ui, lib) {
   function userBank() {
     if (!dev || !dev.bank) return null;
     const b = dev.bank, s = bankSel == null ? null : b.slots[bankSel];
-    const load = (slot) => { const x = b.slots[slot]; if (!x || !x.used || busy) return; run(() => dev.bankLoad(slot), (ok) => ui.say(ok ? tf("didLoad", `${slotName(slot)} ${x.name}`) : tf("isEmpty", slotName(slot)))); };
+    const load = (slot) => { const x = b.slots[slot]; if (!x || !x.used || !engineAvailable(dev.info, x.engine) || busy) return; run(() => dev.bankLoad(slot), (ok) => ui.say(ok ? tf("didLoad", `${slotName(slot)} ${x.name}`) : tf("isEmpty", slotName(slot)))); };
     const rows = b.slots.map((x) => ({
       key: x.slot, name: x.used ? x.name : t("empty"), dim: !x.used,
       drag: x.used ? ["text/x-felucca-slot", String(x.slot)] : null,
       drop: ["text/x-felucca-lib", (id) => { bankSel = x.slot; const p = lib.get(id); if (p) libraryPut(id, x.slot); }],
       cells: [el("span", { class: "tag", text: slotName(x.slot) }),
-        el("span", { class: "nm" }, x.used && ENGINE_IC[engineLabel(dev.info.engines, x.engine)] ? ic(ENGINE_IC[engineLabel(dev.info.engines, x.engine)]) : null, document.createTextNode(x.used ? x.name : "—")),
-        el("span", { class: "tag", text: x.used ? [engineLabel(dev.info.engines, x.engine), CATEGORIES[x.category] || ""].filter(Boolean).join(" · ") : "" })],
+        el("span", { class: "nm" }, x.used && ENGINE_IC[catalogLabel(dev.info, x.engine)] ? ic(ENGINE_IC[catalogLabel(dev.info, x.engine)]) : null, document.createTextNode(x.used ? x.name : "—")),
+        el("span", { class: "tag", text: x.used ? [catalogLabel(dev.info, x.engine), CATEGORIES[x.category] || ""].filter(Boolean).join(" · ") : "" })],
     }));
     /* 1.4: the selected slot's category (as the device's SAVE > CATEGORY) */
     const catSel = dev.info.categories && s && s.used ? el("label", { class: "pick sel" }, el("span", { class: "lbl", text: "CATEGORY" }),
       el("b", { text: CATEGORIES[s.category] || "—" }),
-      el("select", { "aria-label": "CATEGORY", disabled: busy,
+      el("select", { "aria-label": "CATEGORY", disabled: busy || !engineAvailable(dev.info, s.engine),
         onchange: (e) => run(() => dev.bankCategory(bankSel, +e.target.value), (ok) => { if (ok) ui.say(`${slotName(bankSel)} ${CATEGORIES[+e.target.value] || "—"}`); }) },
       ...CATEGORIES.map((c, i) => el("option", { value: i, text: c || "—", selected: (s.category || 0) === i })))) : null;
     const c = card("USER BANK", "port_usb_c",
       listbox("USER BANK", rows, bankSel, { onSelect: (k) => { bankSel = k; draw(); }, onEnter: load }),
       catSel,
       el("div", { class: "acts wrap" },
-        btn("symbol_folder_open", t("load"), () => load(bankSel), !s || !s.used || busy, true),
+        btn("symbol_folder_open", t("load"), () => load(bankSel), !s || !s.used || !engineAvailable(dev.info, s.engine) || busy, true),
         btn("symbol_download_as", t("store"), async () => {
           const name = await ui.ask(`${t("store")} ${slotName(bankSel)}`, s.used ? s.name : "");
           if (name == null) return;

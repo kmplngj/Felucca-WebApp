@@ -929,7 +929,7 @@ if (existsSync(INTERTIGHT))
     "fonts: app/fonts/InterTight-subset.ttf is what gen_fonts.py cuts");
 else console.log("fonts: from InterTight[wght].ttf (no FELUCCA_INTERTIGHT)           skip");
 const FIRMWARE = process.env.FELUCCA_FIRMWARE || join(HERE, "..");
-if (existsSync(join(FIRMWARE, "src/icons.c")))
+if (existsSync(join(FIRMWARE, "src/icons.c")) || existsSync(join(FIRMWARE, "firmware/src/icons.c")))
   ok((() => { try { execFileSync("python3", [join(HERE, "gen_icons.py"), join(APP, "src/paramicons.js"), "--check", "--firmware", FIRMWARE], { stdio: "pipe" }); return true; } catch { return false; } })(),
     "icons: app/src/paramicons.js is what gen_icons.py reads from the firmware's icons.c");
 else console.log("icons: from the firmware's icons.c (no FELUCCA_FIRMWARE)           skip");

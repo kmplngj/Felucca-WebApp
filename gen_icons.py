@@ -5,7 +5,8 @@
 
   gen_icons.py OUT.js [--check] [--firmware DIR]
 
-DIR: a Felucca checkout's felucca/ (default: the folder above this file, or FELUCCA_FIRMWARE). Read:
+DIR: a Felucca checkout (firmware/src/ and tools/) or the older felucca/ layout
+(default: the folder above this file, or FELUCCA_FIRMWARE). Read:
 src/icons.c (ICON_MAP: label -> ICON_*, WAVE_ICON: a wave's name -> ICON_*) and tools/gen_aa_icons.py
 (LEGACY / EXTRA: the icon's name -> the glyph, a tuple = the first the font has), and the MOD matrix's
 mod_src_icon / mod_dst_icon, and the MENU rows' (src/menu_items.c, src/ui_menu.c). So a parameter shows the
@@ -23,12 +24,16 @@ from fontTools.ttLib import TTFont
 HERE = Path(__file__).resolve().parent
 
 
+def source_dir(fw):
+    return fw / "firmware" / "src" if (fw / "firmware" / "src").is_dir() else fw / "src"
+
+
 def firmware_dir():
     a = sys.argv
     d = a[a.index("--firmware") + 1] if "--firmware" in a else os.environ.get("FELUCCA_FIRMWARE") or str(HERE.parent)
     d = Path(d)
-    if not (d / "src" / "icons.c").exists() or not (d / "tools" / "gen_aa_icons.py").exists():
-        raise SystemExit(f"gen_icons.py: no src/icons.c and tools/gen_aa_icons.py in {d} (pass --firmware DIR, Felucca's felucca/)")
+    if not (source_dir(d) / "icons.c").exists() or not (d / "tools" / "gen_aa_icons.py").exists():
+        raise SystemExit(f"gen_icons.py: no firmware/src/icons.c (or src/icons.c) and tools/gen_aa_icons.py in {d} (pass --firmware DIR, Felucca's felucca/)")
     return d
 
 
@@ -44,9 +49,9 @@ def dicts(py):
 def menu_icons(fw, glyph):
     """the MENU's icons: up to 1.0.4 one per row (ui_menu.c draw_menu's ICO, in menu_items.c MI_NAME's order), from
     1.0.5 one per tab (MTAB_ICON, MTAB_NAME): {"rows": name -> glyph, "tabs": tab name -> glyph}"""
-    if not (fw / "src" / "menu_items.c").exists():
+    if not (source_dir(fw) / "menu_items.c").exists():
         return {"rows": {}, "tabs": {}}
-    items, menu = (fw / "src" / "menu_items.c").read_text(), (fw / "src" / "ui_menu.c").read_text()
+    items, menu = (source_dir(fw) / "menu_items.c").read_text(), (source_dir(fw) / "ui_menu.c").read_text()
     def pairs(names_re, icons_re):
         n, i = re.search(names_re, items, re.S), re.search(icons_re, menu, re.S)
         if not n or not i:
@@ -64,7 +69,7 @@ def table(fw):
     names = dicts(fw / "tools" / "gen_aa_icons.py")
     pick = lambda g: next((x for x in g if x in cmap), None) if isinstance(g, tuple) else (g if g in cmap else None)
     glyph = {"ICON_" + k.upper(): pick(v) for k, v in names.items()}
-    src = (fw / "src" / "icons.c").read_text()
+    src = (source_dir(fw) / "icons.c").read_text()
     def block(name):
         m = re.search(r"static const icon_map_t " + name + r"\[\] = \{(.*?)\n\};", src, re.S)
         if not m:

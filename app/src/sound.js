@@ -5,7 +5,7 @@
 // with the envelope and the LFO drawn from their values. Built when the sound's engine or DESC changes; values
 // change in place (a row the user holds is left alone).
 
-import { F, aliasOf, engineOrder } from "./proto.js";
+import { engineAvailable, catalogLabel, F, aliasOf, engineOrder } from "./proto.js";
 import { ENGINE_IC, el, ic, store } from "./dom.js";
 import { fm6Screen } from "./fm6.js";
 import { G_SKIP, HEAD_IC, LAYOUT, paramIcon, visible } from "./layout.js";
@@ -71,20 +71,24 @@ export function soundScreen(root, ui) {
       if (!s && v15() && (id === 96 || id === 102)) build(dev);   /* (A B C / ATK DEC REL take another meaning) */
     }, { icon: (v) => paramIcon(desc(s, id), v, engineAt), rename });
     if (!s && v15() && id >= 97 && id <= 100) r.el.classList.toggle("dim", !dev.dump.p[96]);   /* (TYPE OFF) */
+    if (!s && id >= dev.info.pe0 && !engineAvailable(dev.info, dev.dump.engine)) {
+      for (const input of r.el.querySelectorAll("input,select,button")) input.disabled = true;
+    }
     rows.set(key(s, id), r);
     return r.el;
   }
 
   /* ---- the voice: engine, preset, prev / next, init ---- */
   function voice() {
-    const e = dev.dump.engine, names = dev.names[e] || [], eng = dev.info.engines[e] || "";
+    const e = dev.dump.engine, names = dev.names[e] || [], eng = catalogLabel(dev.info, e);
     const shown = names.map((_, i) => i).filter((i) => aliasOf(names, i) === i);
     const at = Math.max(0, shown.indexOf(aliasOf(names, dev.dump.preset)));
     const engSel = el("select", { "aria-label": t("engine") },
-      ...engineOrder(dev.info.engines).map((i) => el("option", { value: i, text: dev.info.engines[i] })));
+      ...engineOrder(dev.info.engines).filter((i) => engineAvailable(dev.info, i)).map((i) => el("option", { value: i, text: dev.info.engines[i] })));
+    if (!engineAvailable(dev.info, e)) engSel.append(el("option", { value: e, text: eng, disabled: true }));
     engSel.value = String(e);
     engSel.addEventListener("change", () => dev.loadPreset(+engSel.value, 0));
-    const preSel = el("select", { "aria-label": t("preset") }, ...shown.map((i) => el("option", { value: i, text: names[i] })));
+    const preSel = el("select", { "aria-label": t("preset"), disabled: !names.length }, ...shown.map((i) => el("option", { value: i, text: names[i] })));
     preSel.value = String(aliasOf(names, dev.dump.preset));
     preSel.addEventListener("change", () => dev.loadPreset(e, +preSel.value));
     const step = (dir) => { const n = shown[(at + dir + shown.length) % shown.length]; if (n != null) dev.loadPreset(e, n); };
@@ -94,11 +98,11 @@ export function soundScreen(root, ui) {
         el("div", { class: "name", text: names[dev.dump.preset] || "—" }),
         el("div", { class: "meta" },
           el("label", { class: "pick" }, el("span", { class: "lbl", text: t("engine") }), el("b", { text: eng }), engSel),
-          el("label", { class: "pick" }, el("span", { class: "lbl", text: t("preset") }), el("b", { text: `${at + 1}` }), el("span", { class: "lbl", text: `/ ${shown.length}` }), preSel))),
+          el("label", { class: "pick" }, el("span", { class: "lbl", text: t("preset") }), el("b", { text: names.length ? `${at + 1}` : `N/A (${dev.dump.preset})` }), el("span", { class: "lbl", text: `/ ${shown.length}` }), preSel))),
       el("div", { class: "acts" },
-        el("button", { type: "button", class: "btn", onclick: () => step(-1) }, ic("control_arrow_back"), t("prev")),
-        el("button", { type: "button", class: "btn", onclick: () => step(1) }, ic("control_arrow_forward"), t("next")),
-        el("button", { type: "button", class: "btn", onclick: async () => { if (await ui.confirm(t("initQ"))) dev.initSound(); } }, ic("control_arrow_randomize"), t("init"))));
+        el("button", { type: "button", class: "btn", disabled: !engineAvailable(dev.info, e), onclick: () => step(-1) }, ic("control_arrow_back"), t("prev")),
+        el("button", { type: "button", class: "btn", disabled: !engineAvailable(dev.info, e), onclick: () => step(1) }, ic("control_arrow_forward"), t("next")),
+        el("button", { type: "button", class: "btn", disabled: !engineAvailable(dev.info, e), onclick: async () => { if (await ui.confirm(t("initQ"))) dev.initSound(); } }, ic("control_arrow_randomize"), t("init"))));
   }
 
   /* ---- a group: one card, pages as cells ---- */

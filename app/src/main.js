@@ -4,7 +4,7 @@
 // The page: the frame (header, tracks, flash, places, help bar, messages, dialogs), the connection and its
 // events, and the screens. ?mock=1 drives everything against the simulated device (&legacy=1: no live sync).
 
-import { makeMockDevice } from "./proto.js";
+import { engineAvailable, catalogLabel, makeMockDevice } from "./proto.js";
 import { Device } from "./device.js";
 import { $, $$, el, icons, store } from "./dom.js";
 import { onHelp } from "./parts.js";
@@ -178,7 +178,7 @@ function drawTracks() {
   const n = dev && dev.loaded ? dev.info.ntrk || 0 : 0, box = $("#tracks");
   box.replaceChildren(...Array.from({ length: n }, (_, i) => {
     const x = dev.mix && dev.mix.tracks[i];
-    const name = x ? [dev.info.engines[x.engine], (dev.names[x.engine] || [])[x.preset]].filter(Boolean).join(" ") : "";
+    const name = x ? [catalogLabel(dev.info, x.engine), (dev.names[x.engine] || [])[x.preset]].filter(Boolean).join(" ") : "";
     return el("button", {
       type: "button", class: "trk", role: "radio", "aria-checked": String(i === dev.sel), "aria-label": `${t("track")} ${i + 1}${name ? ": " + name : ""}`,
       onclick: () => { if (dev && i !== dev.sel) dev.selectTrack(i); },
@@ -220,7 +220,7 @@ async function connect() {
   $("#connect").disabled = true;
   try {
     if (!access) {
-      if (MOCK) access = makeMockDevice({ legacy: QS.get("legacy") === "1" }).access;
+      if (MOCK) access = makeMockDevice({ legacy: QS.get("legacy") === "1", catalog: QS.get("catalog") === "1", test14: QS.get("test14") === "1", omit: QS.has("omit") ? Number(QS.get("omit")) : undefined }).access;
       else if (!navigator.requestMIDIAccess) { sayK("nomidi"); return; }
       else { try { access = await navigator.requestMIDIAccess({ sysex: true }); } catch { sayK("denied"); return; } }
       access.onstatechange = onPortState;

@@ -254,7 +254,17 @@ function archiveInfo(a) {
   const ext = a.slice(pos + 1);
   const supported = /^FELUCCA /i.test(version) && ext[0] === 16 && ext[1] === 0x55 && ext[2] === 1 &&
     ext[4] === 0x4d && ext[5] === 1 && ext[8] === 0x42 && ext[9] === 1 && (ext[10] & 1);
-  return {version,supported};
+  let backupExtraCaps = 0;
+  const lengths = { 0x55: 1, 0x4d: 2, 0x42: 1, 0x46: 2, 0x53: 1, 0x50: 1, 0x4E: 1, 0x52: 1,
+    0x4C: 1, 0x41: 2, 0x54: 1, 0x57: 1, 0x56: 1, 0x43: 1, 0x4B: 1, 0x45: 1, 0x49: 12, 0x58: 1 };
+  if (supported) for (let q = 1; q < ext.length;) {
+    const tag = ext[q], n = lengths[tag];
+    if (!n || ext[q + 1] !== 1 || q + 2 + n > ext.length) throw new Error("Invalid or unsupported INFO capability block");
+    if (tag === 0x49 && (ext[q + 2] !== 64 || ext[q + 3] !== 127 || ext[q + 13] & 126)) throw new Error("Invalid engine catalog");
+    if (tag === 0x58) backupExtraCaps = ext[q + 2] & 7;
+    q += 2 + n;
+  }
+  return {version,supported,backupExtraCaps};
 }
 $("stock-go").addEventListener("click", async () => {
   if (!stock || writing) return;
@@ -279,9 +289,9 @@ $("stock-go").addEventListener("click", async () => {
       const info = archiveInfo(await link.request([1,[]]));
       if (!info.supported) { sayK("stockUnsupported"); return; }
       const archive = await captureBackup((r,o) => link.request(r,o), info.version,
-        (done,total) => sayK("backup", `${Math.round(done / Math.max(1,total) * 100)}%`));
+        (done,total) => sayK("backup", `${Math.round(done / Math.max(1,total) * 100)}%`), { info });
       saveArchive(archive); link.close(); link = null;
-      if (!confirm(t("stockConfirm"))) return;
+      if (!confirm(t("stockConfirm") + (settingsFormat(archive) === "PER6" ? "\n\n" + PER6_WARNING : ""))) return;
       await up.install(selected.image, selected.product, step);
     }
   } catch (e) {

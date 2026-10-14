@@ -133,6 +133,48 @@ class Reader {
   s() { let s = ""; for (;;) { const c = this.b(); if (!c) return s; s += String.fromCharCode(c); } }
 }
 
+/* Engine ids are stable 0..63. Only a wholly absent catalog permits the legacy fallback.
+   Walk tag boundaries, never search arbitrary data bytes for a tag. Reject a present but unusable catalog
+   before the connection can issue writes (including truncated/unsupported versions). */
+function readEngineCatalog(trailer, info) {
+  info.engineCatalog = null;
+  info.userEngine = info.nengines;
+  info.backupExtraCaps = 0;
+  if (trailer.length === 1 && trailer[0] !== 0x49 && trailer[0] !== 0x58) return; // historical untagged PR flag
+  const lengths = { 0x55: 1, 0x4d: 2, 0x42: 1, 0x46: 2, 0x53: 1, 0x50: 1, 0x4E: 1,
+    0x52: 1, 0x4C: 1, 0x41: 2, 0x54: 1, 0x57: 1, 0x56: 1, 0x43: 1, 0x4B: 1, 0x45: 1, 0x58: 1 };
+  for (let q = trailer[0] === 16 ? 1 : 0; q < trailer.length;) {
+    const tag = trailer[q];
+    if (tag === 0x49) {
+      const bits = trailer.slice(q + 4, q + 14);
+      if (trailer[q + 1] !== 1 || trailer[q + 2] !== 64 || trailer[q + 3] !== 127 ||
+          info.engineCatalog || bits.length !== 10 || bits.some((b) => !Number.isInteger(b) || b < 0 || b > 127) ||
+          (bits[9] & 126) || info.nengines > 64)
+        throw new Error("Invalid or unsupported engine catalog; update the editor before connecting");
+      info.engineCatalog = { version: 1, size: 64, bitmap: bits };
+      info.userEngine = 127;
+      q += 14;
+      continue;
+    }
+    const n = lengths[tag];
+    if (!n || trailer[q + 1] !== 1 || q + 2 + n > trailer.length) {
+      // An unrecognized trailer cannot establish that the catalog is absent. Legacy INFO ends at a tag boundary.
+      throw new Error("Invalid or unsupported INFO capability block; update the editor before connecting");
+    }
+    if (tag === 0x58) info.backupExtraCaps = trailer[q + 2] & 7;
+    q += 2 + n;
+  }
+}
+function engineAvailable(info, id) {
+  if (!info || !Number.isInteger(id) || id < 0 || id >= info.nengines || !info.engines[id] || info.engines[id] === "-") return false;
+  const c = info.engineCatalog;
+  return !c || !!(c.bitmap[Math.floor(id / 7)] & (1 << (id % 7)));
+}
+const userEngine = (info) => info.engineCatalog ? info.userEngine : info.nengines;
+const catalogLabel = (info, id) => engineAvailable(info, id) ? info.engines[id] : `N/A (${id})`;
+const drumEngine = (info, id) => info.engineCatalog ? id === 10 : info.engines[id] === "DRUM";
+const fm6Engine = (info, id) => info.engineCatalog ? id === 12 : info.engines[id] === "FM6";
+
 const parse = {
   [CMD.INFO](a) {
     const r = new Reader(a);
@@ -187,6 +229,7 @@ const parse = {
     o.midiLearn = o.midiLearn || 0;               /* MIDI LEARN's entries (1.5): 0 none */
     o.cond = o.cond || 0;                         /* a step's conditions (1.5.5): 0 none (no condition byte in steps) */
     o.customPalette = o.customPalette || 0;       /* CUSTOM palette's colours (1.6): 0 none (no PALETTE_GET / _SET) */
+    readEngineCatalog(trailer, o);
     o.categories = o.motionCap > 0;               /* user preset categories (1.2 / 1.4, with the same tags) */
     return o;
   },
@@ -941,6 +984,7 @@ function cleanPatch(pt) {
     tags: Array.isArray(pt.tags) ? [...new Set(pt.tags.map((x) => String(x).trim()).filter(Boolean))] : [],
     created: pt.created || now, modified: pt.modified || pt.created || now,
   };
+  if (pt.engineIds === 64) o.engineIds = 64;
   if (Number.isInteger(pt.slot)) o.slot = pt.slot;
   if (Number.isInteger(pt.category) && pt.category > 0 && pt.category < CATEGORIES.length) o.category = pt.category;   /* (1.4) */
   if (Array.isArray(pt.fm6) && pt.fm6.length === FM6.PACKED) o.fm6 = pt.fm6.map((x) => (x | 0) & 127);   /* (a converted */
@@ -952,7 +996,7 @@ function cleanPatch(pt) {
 function libraryFile(kind, patches, ctx) {
   return {
     format: LIB.FORMAT, version: LIB.VERSION, kind, firmware: ctx.firmware || "",
-    pCount: ctx.keys ? ctx.keys.length : 0, pE0: ctx.pe0 ?? null, paramLabels: ctx.keys || [], engines: ctx.engines || [],
+    pCount: ctx.keys ? ctx.keys.length : 0, pE0: ctx.pe0 ?? null, paramLabels: ctx.keys || [], engines: ctx.engines || [], engineIds: ctx.engineIds || (patches.some((p) => p.engineIds === 64) ? 64 : undefined),
     exported: new Date().toISOString(),
     patches: patches.map((x) => {
       const c = cleanPatch(x);
@@ -971,10 +1015,13 @@ function libraryFile(kind, patches, ctx) {
    one (the set retired after 1.0.2) as DRUM's kit (fromPerc) */
 function readLibraryFile(obj, ctx) {
   if (!obj || typeof obj !== "object") throw new Error("not JSON");
-  const noFm4 = !(ctx.engines || []).includes("DIGITAL");
-  const perc = (pt, pe0) => (pt && fromPerc(pt, ctx.engines, pe0)) || pt;
-  const fm4 = (pt, nm, pe0) => (nm === "DIGITAL" && noFm4 ? fromDigital(pt, ctx.engines, pe0) : perc(pt, pe0));
+  const stable = ctx.engineIds === 64 || obj.engineIds === 64;
+  const historical = obj.engineIds !== 64;
+  const noFm4 = historical && !(ctx.engines || []).includes("DIGITAL");
+  const perc = (pt, pe0) => (historical && pt && fromPerc(pt, ctx.engines, pe0)) || pt;
+  const fm4 = (pt, nm, pe0) => (nm === "DIGITAL" && noFm4 ? fromDigital(pt, ctx.engines, pe0) || pt : perc(pt, pe0));
   const engIndex = (name, idx, fileEngines) => {
+    if (stable) return Number.isInteger(idx) && idx >= 0 && idx < 64 ? idx : -1;
     const nm = name || (fileEngines || [])[idx];
     if (ctx.engines && ctx.engines.length) {
       if (nm) return ctx.engines.indexOf(nm);
@@ -989,7 +1036,7 @@ function readLibraryFile(obj, ctx) {
     if (e < 0) return { patches: [], skipped: 1, keys: null };
     const p = ctx.keys && ctx.pe0 && obj.p.length !== ctx.keys.length ? tailParams(obj.p, ctx.keys.length, ctx.pe0)
       : obj.p.slice(0, ctx.keys ? ctx.keys.length : obj.p.length);
-    const pt = fm4({ name: obj.presetName || obj.engineName || "PATCH", engine: e, engineName: obj.engineName, p,
+    const pt = fm4({ name: obj.presetName || obj.engineName || "PATCH", engine: e, engineIds: stable ? 64 : undefined, engineName: obj.engineName, p, fm6: obj.fm6, fm4: obj.fm4,
       pattern: Array.isArray(obj.steps) ? patternFromSteps(obj.steps) : null, tags: ["file"] }, obj.engineName,
       ctx.keys && ctx.pe0 ? ctx.pe0 : p.length - 8);
     return pt ? { patches: [cleanPatch(pt)], skipped: 0, keys: null } : { patches: [], skipped: 1, keys: null };
@@ -1004,12 +1051,12 @@ function readLibraryFile(obj, ctx) {
     if (!x || !Array.isArray(x.params)) { skipped++; continue; }
     const nm = x.engineName || (obj.engines || [])[x.engine | 0];
     const digital = nm === "DIGITAL" && noFm4;
-    const e = digital ? 1 : engIndex(x.engineName, x.engine | 0, obj.engines);
+    const e = digital ? 1 : engIndex(x.engineName, stable ? x.engine : x.engine | 0, obj.engines);
     if (e < 0) { skipped++; continue; }
     const p = remapParams(x.params, fileKeys, ctx.keys, ctx.pe0);
     const pe0 = ctx.keys && ctx.pe0 ? ctx.pe0 : obj.pE0 ?? p.length - 8;
-    const pt = digital ? fromDigital({ ...x, engine: e, p }, ctx.engines, pe0)
-      : perc(cleanPatch({ ...x, engine: e, engineName: (ctx.engines || [])[e] || x.engineName || (obj.engines || [])[x.engine], p }), pe0);
+    const pt = digital ? fromDigital({ ...x, engine: e, p }, ctx.engines, pe0) || cleanPatch({ ...x, engine: e, p, engineIds: stable ? 64 : undefined })
+      : perc(cleanPatch({ ...x, engine: e, engineIds: stable ? 64 : undefined, engineName: stable ? x.engineName || (obj.engines || [])[x.engine] || "" : (ctx.engines || [])[e] || x.engineName || (obj.engines || [])[x.engine], p }), pe0);
     if (!pt) { skipped++; continue; }
     out.push(cleanPatch(pt));
   }
@@ -1033,7 +1080,7 @@ const bank = {
   /* an FM6 sound's own patch comes with it (fm6: packed) where the firmware keeps one (INFO fm6.caps bit 1) */
   async get(rq, info, slot) {
     const u = parse[CMD.UP_GET](await rq(req.upGet(slot)), info);
-    if (u.used && presetPatches(info) && info.engines[u.engine] === "FM6") {
+    if (u.used && presetPatches(info) && fm6Engine(info, u.engine)) {
       const g = parse[CMD.FM6_GET](await rq(req.fm6Get(FM6.TARGET.USER, slot)));
       if (!g.rc) u.fm6 = g.packed;
     }
@@ -1041,10 +1088,11 @@ const bank = {
   },
   /* -> rc (0 ok); with info, an FM6 sound's patch (pt.fm6) goes with it */
   async put(rq, slot, pt, info) {
+    if (info && info.engineCatalog && !engineAvailable(info, pt.engine)) return 1;
     /* (the category only to firmware that takes it, 1.4; older answers rc 1 to it) */
     const cat = info && info.categories && Number.isInteger(pt.category) ? pt.category : null;
     const rc = parse[CMD.UP_PUT](await rq(req.upPut(slot, pt, cat), FLASH_OPT)).rc;
-    if (rc || !pt.fm6 || !presetPatches(info) || info.engines[pt.engine] !== "FM6") return rc;
+    if (rc || !pt.fm6 || !presetPatches(info) || !fm6Engine(info, pt.engine)) return rc;
     return parse[CMD.FM6_PUT](await rq(req.fm6Put(FM6.TARGET.USER, slot, pt.fm6), FLASH_OPT)).rc;
   },
   async store(rq, slot, name) { return parse[CMD.UP_STORE](await rq(req.upStore(slot, name), FLASH_OPT)).rc; },
@@ -1057,14 +1105,14 @@ async function capturePatch(rq, info, name) {
   const dump = parse[CMD.DUMP](await rq(req.dump()), info);
   const steps = [];
   for (let i = 0; i < UP.PAT && i < info.nstep; i++) steps.push(parse[CMD.STEP_GET](await rq(req.stepGet(i))));
-  const drum = info.engines[dump.engine] === "DRUM";   /* (a DRUM track that strikes a lane: its grid) */
+  const drum = drumEngine(info, dump.engine);   /* (a DRUM track that strikes a lane: its grid) */
   let fm6 = null;                                      /* an FM6 track: its own patch (the selected track's) */
-  if (info.fm6 && info.engines[dump.engine] === "FM6") {
+  if (info.fm6 && fm6Engine(info, dump.engine)) {
     const sel = info.ntrk ? parse[CMD.TRACK](await rq(req.track())).sel : 0;
     const g = parse[CMD.FM6_GET](await rq(req.fm6Get(FM6.TARGET.TRACK, sel)));
     if (!g.rc) fm6 = g.packed;
   }
-  return { patch: cleanPatch({ name, engine: dump.engine, engineName: info.engines[dump.engine], p: dump.p, pattern: patternFromSteps(steps),
+  return { patch: cleanPatch({ name, engine: dump.engine, engineIds: info.engineCatalog ? 64 : undefined, engineName: info.engines[dump.engine], p: dump.p, pattern: patternFromSteps(steps),
     grid: drum ? gridFromSteps(steps) : null, fm6 }), dump, steps };
 }
 
@@ -1082,6 +1130,7 @@ const trackOwn = (i, pe0) => TRACK_OWN.has(i) || (pe0 >= 83 && P_CHORD.includes(
    there = undo) and treats the SETs right after G_ENGSEL as part of this load (EDITOR_PROTOCOL.md "undo").
    opt: {gEng: G_ENGSEL id, progress(i, n)} */
 async function auditionPatch(rq, info, pt, opt = {}) {
+  if (!engineAvailable(info, pt.engine)) throw new Error("Unavailable engine");
   await rq(req.set(1, opt.gEng ?? 20, pt.engine));
   const dump = parse[CMD.DUMP](await rq(req.dump()), info);
   const n = Math.min(info.pcount, pt.p.length);
@@ -1646,7 +1695,7 @@ function makeMockDevice(opt = {}) {
       presets: [] },
     { name: "PHASE", titles: ["PHS", "LINE"], edit: [E("WAVE", ["SAW", "SQR", "PLS", "DSIN", "SPLS", "RSAW", "RTRI", "RTRP"], 0),
         E("WAVE2", ["-", "SAW", "SQR", "PLS", "DSIN", "SPLS", "RSAW", "RTRI", "RTRP"], 0), D("DCW", F.PCT, 0, 127, 60), D("ENV", F.PCT, 0, 127, 64),
-        D("DTN", F.INT, 0, 127, 0, null, "ct"), E("LINE", ["MIX", "RING"], 0), D("SUB", F.PCT, 0, 127, 0), NONE],
+        D("DTN", F.INT, 0, 127, 0, null, "ct"), E("LINE", ["MIX", "RING"], 0), D("SUB", F.PCT, 0, 127, 0), D("FOLD", F.PCT, 0, 127, 0)],
       presets: [P("BRASS", [0, 0, 30, 90, 0, 0, 0, 0], [8, 70, 90, 40], 0, 6), P("ORGAN", [3, 0, 40, 0, 0, 0, 0, 0], [0, 127, 127, 30], 0, 6),
         P("STRING", [0, 4, 50, 40, 12, 0, 0, 0], [40, 90, 100, 70], 0, 5), P("RESO", [5, 0, 60, 60, 0, 0, 0, 0], [0, 70, 30, 60], 0, 1),
         P("BELL", [6, 0, 80, 50, 0, 0, 0, 0], [0, 95, 0, 90], 0, 7), P("WIRE", [4, 7, 70, 40, 7, 0, 0, 0], [10, 80, 80, 60], 0, 4)] },
@@ -1711,6 +1760,14 @@ function makeMockDevice(opt = {}) {
         E("MODE", ["ONE", "GATE", "LOOP"], 0), E("REV", ["OFF", "ON"], 0), D("DCAY", F.TIME, 0, 127, 127), D("TONE", F.INT, 0, 127, 127)],
       presets: [P("CHOP", [0, 2, 0, 0, 0, 0, 127, 127], [0, 127, 127, 30], 0, 9), P("STUTTER", [0, 1, 0, 0, 1, 0, 90, 110], [0, 127, 127, 12], 0, 10)] },
   ];
+  if (opt.test14) ENG.push({ name: "TEST14", titles: ["TEST", "TEST"], edit: Array.from({ length: 8 }, () => D("TEST", F.INT, -64, 127, 0)),
+    presets: [P("TEST A", [0,0,0,0,0,0,0,0], [0,0,127,0]), P("TEST B", [1,1,1,1,1,1,1,1], [0,0,127,0])] });
+  const catalogOn = !!(opt.catalog || opt.test14 || opt.omit != null);
+  let catalogReady = false;
+  const plays = (e) => Number.isInteger(e) && e >= 0 && e < ENG.length && ENG[e].name !== "-" && e !== opt.omit;
+  const catalogNames = () => ENG.map((e, i) => plays(i) ? e.name : "-");
+  const userId = catalogOn ? 127 : ENG.length;
+  if (catalogOn) { GP[20].names = catalogNames(); GP[20].max = ENG.length - 1; }
   const FM6_E = ENG.findIndex((e) => e.name === "FM6"), FM6_OWN = FM6.FACTORY_PK.length, DRUM_E = ENG.findIndex((e) => e.name === "DRUM");
   /* factory PATTERNS[] (engines.c; the device loads them from SAVE > PHRASES, presets only suggest one): absolute
      notes, 0 rest; flags 1 accent, 2 slide, 4 tie (holds the previous note) */
@@ -1760,7 +1817,7 @@ function makeMockDevice(opt = {}) {
     palette: 0, font: 0, monitor: 0, filter: 0, bankSig: 0,
     palettes: ["GREY", "GREEN", "AMBER", "ICE", "VIOLET", "ROSE", "PAPER", "HI-CON", "NIGHT", "MONO"],
     custom: { stored: false, active: false, c: PAL_BUILTIN[0].c.slice(), preview: null },   /* CUSTOM palette (1.6; palette: the base) */
-    favorites: Array.from({ length: ENG.length + 1 }, () => []),
+    favorites: Array.from({ length: 128 }, () => []),
     menu: MENU.map((m) => m.def),                   /* the MENU settings' values (COLOR: palette) */
     vbank: { valid: false, name: "", voices: new Array(32).fill(null), tx: null },   /* FM6's voice bank (fm6_vbank.c) */
     learn: new Array(16).fill(null),                /* MIDI LEARN's map (midi_control.c): {cc, track, id} */
@@ -1770,10 +1827,10 @@ function makeMockDevice(opt = {}) {
     Object.defineProperty(st, k, { enumerable: false, get: () => st.tracks[st.sel][k], set: (v) => { st.tracks[st.sel][k] = v; } });
   }
   const watchMs = opt.watchMs || 3000;
-  const desc = (scope, id) => (scope === 0 && id < P_COUNT ? (id >= P_E0 ? ENG[st.engine].edit[id - P_E0] : TP[id])
+  const desc = (scope, id) => (scope === 0 && id < P_COUNT ? (id >= P_E0 ? !plays(st.engine) && catalogOn ? D(`E${id - P_E0 + 1}`, F.INT, -64, 127, 0) : ENG[st.engine].edit[id - P_E0] : TP[id])
     : scope === 1 && id < G_COUNT ? GP[id] : null);
   const EMPTY = { n: 0, notes: [0, 0, 0, 0], time: 2, flags: 0, vel: 0, hit: 0, acc: 0, chance: 100, ratchet: 1 };
-  const isDrum = () => ENG[st.engine].name === "DRUM";
+  const isDrum = () => st.engine === DRUM_E;
   const clearSteps = () => st.step.forEach((s) => Object.assign(s, EMPTY, { notes: [0, 0, 0, 0] }));
   function toGrid(s) {                            /* eng_drum.c step_to_grid: a lane's own note becomes its hit */
     if (s.time !== 0) return;
@@ -1824,6 +1881,7 @@ function makeMockDevice(opt = {}) {
     t.p[P_E0 + 7] = t.slot = k < 0 ? FM6_OWN : k;
   }
   function setEngine(ei) {
+    if (catalogOn && catalogReady && !plays(ei)) return;
     if (ei % ENG.length === 1) { fm4Load(0); return; }   /* DIGITAL (retired): its first preset, as FM6 (ui.c set_engine_of) */
     st.engine = ei % ENG.length;
     for (let i = 0; i < 8; i++) st.p[P_E0 + i] = ENG[st.engine].edit[i].def;
@@ -1944,7 +2002,7 @@ function makeMockDevice(opt = {}) {
             r.b();
             grid = raw.map(([h, c]) => { const x = r.b(), hit = h | (x & 1) << 7; return [hit, (c | (x & 2) << 6) & hit]; });
           } else pattern = raw.map(([n, f]) => patNorm(n, f));
-          if (slot >= NB || engine >= ENG.length || !name.length || name.length > UP.NAME_MAX || /[^\x20-\x7E]/.test(name)) rc = 1;
+          if (slot >= NB || (catalogOn ? !plays(engine) : engine >= ENG.length) || !name.length || name.length > UP.NAME_MAX || /[^\x20-\x7E]/.test(name)) rc = 1;
           else {
             const saved = st.engine;                /* values clamped to the ranges of that engine */
             const pc = fromPerc({ engine, p }, ENG.map((x) => x.name), P_E0);   /* SAMPLE PERC: DRUM (upreset.c up_migrate) */
@@ -1983,7 +2041,7 @@ function makeMockDevice(opt = {}) {
       }
       case CMD.UP_ERASE:
         if (a.length < 1) return null;
-        if (a[0] < NB) { st.bank[a[0]] = null; st.favorites[ENG.length][a[0]] = false; }
+        if (a[0] < NB) { st.bank[a[0]] = null; st.favorites[userId][a[0]] = false; }
         b(a[0]); b(a[0] < NB ? 0 : 1);
         break;
       case CMD.WATCH:
@@ -2025,12 +2083,12 @@ function makeMockDevice(opt = {}) {
       }
       case CMD.FAV_GET: case CMD.FAV_SET: {
         if (!(st.uiCaps & 8)) { b(2); break; }
-        const engine = a[0], preset = v14dec(a[1], a[2]), count = a[3];
-        const limit = engine === ENG.length ? st.bank.length : engine < ENG.length ? ENG[engine].presets.length : 0;
+        const wire = a[0], engine = wire === ENG.length || wire === userId ? userId : wire, preset = v14dec(a[1], a[2]), count = a[3];
+        const limit = engine === userId ? st.bank.length : (catalogOn ? plays(engine) : engine < ENG.length) ? ENG[engine].presets.length : 0;
         if (a.length !== 4 || preset < 0 || preset >= limit ||
-            (cmd === CMD.FAV_GET ? !count || count > 32 || preset + count > limit : count > 1 || engine === ENG.length && count && !st.bank[preset])) { b(1); break; }
+            (cmd === CMD.FAV_GET ? !count || count > 32 || preset + count > limit : count > 1 || engine === userId && count && !st.bank[preset])) { b(1); break; }
         if (cmd === CMD.FAV_SET) st.favorites[engine][preset] = !!count;
-        b(cmd === CMD.FAV_SET ? (opt.noFlash ? 3 : opt.deferSettings ? 4 : 0) : 0); b(engine); v(preset); b(count);
+        b(cmd === CMD.FAV_SET ? (opt.noFlash ? 3 : opt.deferSettings ? 4 : 0) : 0); b(wire); v(preset); b(count);
         if (cmd === CMD.FAV_GET) for (let i = 0; i < count; i++) b(!!st.favorites[engine][preset + i]);
         break;
       }
@@ -2070,7 +2128,7 @@ function makeMockDevice(opt = {}) {
       }
       case CMD.INFO:
         s(opt.legacy ? "FELUCCA 0.4 BETA (MOCK)" : "FELUCCA v1.0 (MOCK)"); b(ENG.length); b(P_COUNT); b(G_COUNT); b(NSTEP); b(P_E0);
-        ENG.forEach((e) => s(e.name));
+        (catalogOn ? catalogNames() : ENG.map((e) => e.name)).forEach(s);
         if (!opt.legacy) b(NTRK);
         if (!opt.legacy && !opt.v3 && !opt.v5) {
           b(16);
@@ -2078,6 +2136,11 @@ function makeMockDevice(opt = {}) {
             if (syncCaps()) { b(0x53); b(1); b(syncCaps()); if (!opt.noFm6) { b(0x50); b(1); b(3); if (!opt.noMenu) { b(0x4E); b(1); b(MENU.length); } } if (ratchetOn()) { b(0x52); b(1); b(4); if (locksOn()) { b(0x4C); b(1); b(1);
               if (capOn()) { b(0x41); b(1); b(0); b(1); b(0x54); b(1); b(16); if (!opt.noLanes) { b(0x57); b(1); b(NTRK); if (!opt.noVbank) { b(0x56); b(1); b(32); if (!opt.noLearn) { b(0x43); b(1); b(16); if (!opt.noCond) { b(0x4B); b(1); b(11); if (!opt.noPalette) { b(0x45); b(1); b(5); } } } } } } } } } }  /* (FM6 v2: no bank, preset
               patches; MENU settings; RATCH; locks; 1.2: 128 records, nudge, song lanes) */
+        }
+        if (catalogOn) {
+          [0x49, 1, 64, 127].forEach(b);
+          for (let i = 0; i < 10; i++) { let bits = 0; for (let k = 0; k < 7; k++) if (plays(7 * i + k)) bits |= 1 << k; b(bits); }
+          [0x58, 1, opt.backupExtraCaps || 0].forEach(b);
         }
         break;
       case CMD.GET: case CMD.SET: {
@@ -2249,7 +2312,7 @@ function makeMockDevice(opt = {}) {
         break;
       }
       case CMD.PRESET:
-        if (a.length < 2 || a[0] >= ENG.length) return null;
+        if (a.length < 2 || (catalogOn ? !plays(a[0]) : a[0] >= ENG.length)) return null;
         if (a[0] === 1) fm4Load(a[1]);              /* a DIGITAL preset: its sound, as FM6 */
         else {
           if (a[0] !== st.engine) setEngine(a[0]);
@@ -2305,6 +2368,7 @@ function makeMockDevice(opt = {}) {
       }
       case CMD.NAMES:
         if (a.length < 1 || a[0] >= ENG.length) return null;
+        if (catalogOn && !plays(a[0])) { b(a[0]); b(0); s("-"); s("-"); break; }
         b(a[0]); b(ENG[a[0]].presets.length); ENG[a[0]].presets.forEach((p) => s(p.name));
         ENG[a[0]].titles.forEach(s);
         break;
@@ -2352,7 +2416,8 @@ function makeMockDevice(opt = {}) {
       /* full backup (EDITOR_PROTOCOL.md v7): LIST takes a snapshot, GET reads it, PUT begin / data / commit / abort */
       case CMD.BACKUP_LIST: {
         if (opt.noBackup || !st.uiCaps) return null;
-        bk.snap = new Map(BK_IDS.filter((id) => (id !== 8 && id !== 9) || !opt.noFm6).map((id) => [id, bkObject(id)]));
+        const ids = a[0] === 1 && opt.backupExtraCaps & 1 ? [...BK_IDS, ...(opt.backupExtraCaps & 2 ? [20] : []), ...(opt.backupExtraCaps & 4 ? [21] : [])] : BK_IDS;
+        bk.snap = new Map(ids.filter((id) => (id !== 8 && id !== 9) || !opt.noFm6).map((id) => [id, bkObject(id)]));
         bk.put = null;
         b(1); b(0); b(bk.snap.size);
         for (const [id, v] of bk.snap) { b(id); u32(v.length); u32(v.length ? crc32(v) : 0); }
@@ -2374,7 +2439,7 @@ function makeMockDevice(opt = {}) {
         let rc = 0;
         if (op === 0) {                                /* begin: id, size, crc */
           const size = bkR(a, 2), crc = bkR(a, 7);
-          const ok = id <= 9 && (id < 8 || !opt.noFm6) && (id === 0 ? [3840, 3648, 3584, 3388].includes(size) : id === 1 ? size === BK_SETTINGS
+          const ok = id === 20 ? !!(opt.backupExtraCaps & 2) && (size === 0 || size === 3616) : id === 21 ? !!(opt.backupExtraCaps & 4) && (size === 0 || size === 472) : id <= 9 && (id < 8 || !opt.noFm6) && (id === 0 ? [3840, 3648, 3584, 3388].includes(size) : id === 1 ? size === BK_SETTINGS || (catalogOn && (size === 572 || (size >= 672 && size <= 2688 && (size - 640) % 32 === 0)))
             : id <= 5 ? [0, 3840, 3648, 3584, 3388].includes(size) : id <= 7 ? size <= 3840 : id === 8 ? size === 0 || size === 3472
             : size === 0 || size === 3728);   /* (8: an older archive's bank, moved into the user presets; 9: their patches) */
           if (!ok || a.length !== 12) rc = 1;
@@ -2420,6 +2485,7 @@ function makeMockDevice(opt = {}) {
     if (id === 0) return had || fill(3840, 1);   /* (FUN10, 1.2) */
     if (id === 1) return had || fill(BK_SETTINGS, 2);
     if (id <= 5) return st.slots[id - 2] ? had && had.length ? had : fill(3840, id) : new Uint8Array(0);
+    if (id === 20 || id === 21) return had || new Uint8Array(0);
     if (id <= 7) { const used = st.bank.some((x, k) => x && (id === 6 ? k < 16 : k >= 16)); return used ? had && had.length ? had : fill(1200, id) : new Uint8Array(0); }
     if (id === 8) return new Uint8Array(0);
     return had || (st.bank.some((x) => x && x.fm6) ? fill(3728, 9) : new Uint8Array(0));
@@ -2513,6 +2579,7 @@ function makeMockDevice(opt = {}) {
     setInterval(() => sim.reload(), 27000),
     setInterval(() => sim.param((st.sel + 1) % NTRK, 39, Math.round(Math.random() * 80) - 40), 13000),   /* pan of another track */
   ];
+  catalogReady = true;
   return {
     state: st, sim,
     tables: { TP, GP, ENG, PATTERNS, P_COUNT, G_COUNT, NSTEP, P_E0, G_ENGSEL, P_SLCR, NTRK, MENU,
@@ -2531,8 +2598,9 @@ async function readDevicePreferences(rq, info, names, previous = null, fresh = f
     if (!previous || state.bankSig !== previous.state.bankSig) slots = await bank.list(rq);
     if (!previous || state.favoriteSig !== previous.state.favoriteSig || state.bankSig !== previous.state.bankSig) {
       favorites = [];
-      for (let engine = 0; engine <= info.nengines; engine++) {
-        const total = engine === info.nengines ? slots.total : (names[engine] || []).length;
+      const ids = engineOrder(info.engines).filter((e) => engineAvailable(info, e));
+      for (const engine of [...ids, userEngine(info)]) {
+        const total = engine === userEngine(info) ? slots.total : (names[engine] || []).length;
         const flags = favorites[engine] = [];
         for (let start = 0; start < total; start += 32) {
           const count = Math.min(32, total - start);
@@ -2581,16 +2649,17 @@ function engineOrder(names) {
 
 function devicePresetRows(info, names, preferences) {
   if (!preferences || !(preferences.state.caps & 8)) return [];
-  const rows = engineOrder(info.engines).filter((engine) => names[engine]).flatMap((engine) => names[engine]
+  const rows = engineOrder(info.engines).filter((engine) => engineAvailable(info, engine) && names[engine]).flatMap((engine) => names[engine]
     .map((name, preset) => ({ engine, preset, name, user: false })).filter((row) => aliasOf(names[engine], row.preset) === row.preset));
   for (const slot of preferences.slots.slots) if (slot.used)
-    rows.push({ engine: info.nengines, preset: slot.slot, name: slot.name, user: true });
+    rows.push({ engine: userEngine(info), preset: slot.slot, name: slot.name, user: true, storedEngine: slot.engine, unavailable: !engineAvailable(info, slot.engine) });
   return rows.map((row) => ({ ...row, favorite: !!(preferences.favorites[row.engine] || [])[row.preset] }))
     .filter((row) => !preferences.state.filter || row.favorite);
 }
 
 /*PROTO-END*/
 export {
+  readEngineCatalog, engineAvailable, userEngine, catalogLabel, fm6Engine,
   HDR, CMD, PUSH, UP, F, v14enc, v14dec, strEnc, frame, unframe,
   LANES, LANE_NOTE, LANE_OF, LANE_ALIAS, drumLane, stepLanes, stepAccents, hitsText, parseHits, hitsEnc,
   readHits, Reader, parse, upName, req, replyMatches, Link, NOTE_NAMES, noteName, parseNote,

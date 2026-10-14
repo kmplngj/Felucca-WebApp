@@ -5,7 +5,7 @@
 // its sound, REC when armed, the level fader, MUTE, PAN and REV. The selected track's strip and SOUND follow
 // each other (device.js mixFromDump). The device sends no levels, so there is no meter.
 
-import { F, fmtValue } from "./proto.js";
+import { engineAvailable, catalogLabel, F, fmtValue } from "./proto.js";
 import { el, ic, put } from "./dom.js";
 import { help, paramRow } from "./parts.js";
 import { t } from "./text.js";
@@ -55,7 +55,7 @@ export function mixScreen(root) {
       el: box,
       update() {
         const y = x(), sel = k === dev.sel;
-        const name = [dev.info.engines[y.engine], (dev.names[y.engine] || [])[y.preset]].filter(Boolean).join(" ");
+        const name = [catalogLabel(dev.info, y.engine), (dev.names[y.engine] || [])[y.preset]].filter(Boolean).join(" ");
         box.classList.toggle("sel", sel);
         box.classList.toggle("muted", !!y.mute);
         box.setAttribute("aria-label", `${t("track")} ${k + 1}${name ? ": " + name : ""}`);

@@ -4,6 +4,7 @@
 // PROJECT: the device's four projects A..D (load, save), the song chain (rows of a project and its repeats, PLAY /
 // STOP, where it is), and the full backup to a file and back.
 
+import { settingsFormat } from "../../fm1backup.js";
 import { F } from "./proto.js";
 import { el, ic } from "./dom.js";
 import { card, paramRow } from "./parts.js";
@@ -140,7 +141,7 @@ export function projectScreen(root, ui) {
       el("div", { class: "acts wrap" },
         el("button", { type: "button", class: "btn primary", disabled: busy || !(caps & 1), onclick: () => run(
           () => dev.backupSave((n, total) => ui.progress(`BACKUP ${Math.round(n / Math.max(1, total) * 100)}%`)),
-          (file) => { if (file) { ui.download(`Felucca-backup-${new Date().toISOString().slice(0, 10)}.json`, file); ui.say(t("backupSaved")); } }) },
+          (file) => { if (file) { ui.download(`Felucca-backup-${new Date().toISOString().slice(0, 10)}.json`, file); ui.say(t(settingsFormat(file) === "PER6" ? "backupPer6" : "backupSaved"), settingsFormat(file) === "PER6" ? "warn" : undefined); } }) },
         ic("symbol_download"), t("save")),
         el("button", { type: "button", class: "btn", disabled: busy || !(caps & 2), onclick: () => restoreInput.click() }, ic("symbol_upload"), t("restore"))),
       restoreInput);

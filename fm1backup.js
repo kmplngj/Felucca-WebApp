@@ -6,7 +6,7 @@
 export const BACKUP_IDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 32, 33, 34];
 const BACKUP_IDS_V2 = BACKUP_IDS.filter((id) => id !== 9);              // 1.0..1.0.2, and their archives
 const BACKUP_IDS_V1 = BACKUP_IDS_V2.filter((id) => id !== 8);           // firmware before FM6, and its archives
-const idsOf = (n) => [BACKUP_IDS, BACKUP_IDS_V2, BACKUP_IDS_V1].find((ids) => ids.length === n) || null;
+const idsOf = (n) => [BACKUP_IDS, [...BACKUP_IDS, 20], [...BACKUP_IDS, 20, 21], BACKUP_IDS_V2, BACKUP_IDS_V1].find((ids) => ids.length === n) || null;
 export const BACKUP_CMD = { LIST: 65, GET: 66, PUT: 67 };
 const BACKUP_CHUNK = 256;
 export const bkU32 = (n) => Array.from({ length: 5 }, (_, i) => (n >>> (i * 7)) & (i === 4 ? 15 : 127));
@@ -89,8 +89,26 @@ export function readBackup(file) {
   if (!objects[0].size || !objects[1].size) throw new Error("Backup is missing the current music or settings");
   return { ...file, objects };
 }
-export async function captureBackup(request, firmware, onProgress = () => {}) {
-  const manifest = bkManifest(await request([BACKUP_CMD.LIST, []], { timeout: 3000, retries: 0 }));
+// The settings magic is a little-endian uint32, not the ASCII string "PER6".
+export function settingsFormat(archive) {
+  const o = archive && archive.objects && archive.objects.find((x) => x.id === 1);
+  if (!o) return "";
+  const b = o.bytes || Uint8Array.from(atob(o.data || ""), (c) => c.charCodeAt(0));
+  if (b.length < 4) return "";
+  const magic = new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(0, true);
+  return magic === 0x50455236 ? "PER6" : magic === 0x50455234 ? "PER4" : "";
+}
+export const PER6_WARNING = "PER6 settings cannot be restored on original firmware 1.6 or earlier (without the versioned engine catalog). Keep this backup and update the FM-1 before restoring it.";
+export function assertBackupCompatible(archive, info) {
+  if (settingsFormat(archive) === "PER6" && !(info && info.engineCatalog && info.engineCatalog.version === 1 && info.engineCatalog.size === 64))
+    throw new Error(PER6_WARNING);
+}
+export async function captureBackup(request, firmware, onProgress = () => {}, opts = {}) {
+  const manifest = bkManifest(await request([BACKUP_CMD.LIST, opts.info && opts.info.backupExtraCaps & 1 ? [1] : []], { timeout: 3000, retries: 0 }));
+  if (opts.info && opts.info.backupExtraCaps & 1) {
+    for (const [bit, id] of [[2, 20], [4, 21]]) if ((opts.info.backupExtraCaps & bit) && !manifest.some((o) => o.id === id))
+      throw new Error("Incomplete extended archive manifest");
+  }
   const objects = [], total = manifest.reduce((n, o) => n + o.size, 0); let done = 0;
   for (const o of manifest) {
     const bytes = new Uint8Array(o.size);
@@ -172,6 +190,7 @@ export function conditionalProjects(archive) {
 // opts.skip: the ids not to send (they stay as they are on the device)
 export async function restoreBackup(request, file, onProgress = () => {}, opts = {}) {
   const archive = readBackup(file); // Validate every byte before the first destructive request.
+  assertBackupCompatible(archive, opts.info);
   const skip = new Set(opts.skip || []);
   const total = archive.objects.reduce((n, o) => n + o.size, 0); let done = 0;
   const ask = async (r, o = {}) => request(r, { timeout: 4000, retries: 0, ...o });
@@ -195,7 +214,7 @@ export async function restoreBackup(request, file, onProgress = () => {}, opts =
         done += 512; onProgress(done, total);
       }
     } else {
-      if (o.id === 9) {                    // firmware before 1.0.3 does not take id 9 (rc 1 at begin, nothing written): skip it
+      if (o.id === 9 || o.id === 20 || o.id === 21) {                    // Unsupported optional objects fail at begin (rc 1, nothing written): skip them.
         const a = await ask([BACKUP_CMD.PUT, [0, o.id, ...bkU32(o.size), ...bkU32(o.crc)]]);
         if (a[2] === 1) { done += o.size; onProgress(done, total); continue; }
         bkCheck(a[2]);
