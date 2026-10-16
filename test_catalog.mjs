@@ -188,6 +188,8 @@ console.log("backup: PER4/PER6/extended opaque round trips, restore order, prefl
   assert.equal(d.engineOk(stablePhase), false, "legacy compact engine names must match even for stable source patches");
   const classicEngineOk = vm.runInNewContext(html.slice(html.indexOf("const engineOk ="), html.indexOf("/* a full parameter set", html.indexOf("const engineOk ="))) + ";engineOk", { dev: d, engineAvailable: app.engineAvailable });
   assert.equal(classicEngineOk(stablePhase), false);
+  assert.equal(d.engineOk({ ...stablePhase, engineName: "" }), false);
+  assert.equal(classicEngineOk({ ...stablePhase, engineName: "" }), false);
   d.info = info;
   const st = memoryStore(), lib = new Library(st); await lib.init(); lib.meta = { engines: names, keys: null, engineIds: 64 };
   const fm = { name: "absent", engine: 12, engineName: "-", engineIds: 64, p: new Array(111).fill(0), fm6: app.FM6.INIT_PK };

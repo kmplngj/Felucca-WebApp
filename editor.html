@@ -4688,7 +4688,7 @@ async function libAdopt(d) {
   try { await store.setMeta("layout", libMeta); } catch (e) { console.warn(e); }
   renderLib();
 }
-const engineOk = (p) => !!dev && engineAvailable(dev.info, p.engine) && (!!dev.info.engineCatalog || !p.engineName || dev.info.engines[p.engine] === p.engineName);
+const engineOk = (p) => !!dev && engineAvailable(dev.info, p.engine) && (!!dev.info.engineCatalog || (p.engineIds !== 64 && !p.engineName) || dev.info.engines[p.engine] === p.engineName);
 /* a full parameter set for UP_PUT: unknown values get the DESC default where it is known, else 0 */
 function fullParams(p) {
   const out = [];
