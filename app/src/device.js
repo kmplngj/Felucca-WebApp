@@ -326,7 +326,7 @@ export class Device {
 
   /* ---- sounds: the user bank (UP_*), audition, capture, favourites (editor.html's library half) ---- */
   /* The catalog makes the id authoritative; legacy layouts also compare names. */
-  engineOk(p) { return engineAvailable(this.info, p.engine) && (!!this.info.engineCatalog || p.engineIds === 64 || !p.engineName || this.info.engines[p.engine] === p.engineName); }
+  engineOk(p) { return engineAvailable(this.info, p.engine) && (!!this.info.engineCatalog || !p.engineName || this.info.engines[p.engine] === p.engineName); }
   /* a full parameter set for UP_PUT: unknown values get the DESC default where it is known, else 0 */
   fullParams(p) {
     const out = [];

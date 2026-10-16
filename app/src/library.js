@@ -116,7 +116,7 @@ export class Library {
     // has no trustworthy stable ID; retain the original library until a compatible layout is available.
     for (const p of this.patches) {
       const name = p.engineName || (this.meta.engines || [])[p.engine];
-      if (!stable && p.engineIds !== 64 && name && name !== "-" && !engines.includes(name) &&
+      if (!stable && p.engineIds !== 64 && (!name || name === "-" || !engines.includes(name)) &&
           !(noFm4 && name === "DIGITAL" && engines.includes("FM6")))
         throw new Error(`Cannot migrate unavailable historical engine ${name}; reconnect firmware that includes it`);
     }

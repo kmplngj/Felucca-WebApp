@@ -996,12 +996,13 @@ function cleanPatch(pt) {
 function libraryFile(kind, patches, ctx) {
   return {
     format: LIB.FORMAT, version: LIB.VERSION, kind, firmware: ctx.firmware || "",
-    pCount: ctx.keys ? ctx.keys.length : 0, pE0: ctx.pe0 ?? null, paramLabels: ctx.keys || [], engines: ctx.engines || [], engineIds: ctx.engineIds || (patches.some((p) => p.engineIds === 64) ? 64 : undefined),
+    pCount: ctx.keys ? ctx.keys.length : 0, pE0: ctx.pe0 ?? null, paramLabels: ctx.keys || [], engines: ctx.engines || [], engineIds: ctx.engineIds || (patches.length && patches.every((p) => p.engineIds === 64) ? 64 : undefined),
     exported: new Date().toISOString(),
     patches: patches.map((x) => {
       const c = cleanPatch(x);
       const o = { name: c.name, engine: c.engine, engineName: c.engineName || (ctx.engines || [])[c.engine] || "",
         params: c.p, pattern: c.pattern, tags: c.tags, created: c.created, modified: c.modified };
+      if (c.engineIds === 64) o.engineIds = 64;
       if (c.grid) o.grid = c.grid;
       if (c.fm6) { o.fm6 = c.fm6; if (c.fm4) o.fm4 = c.fm4; }   /* an FM6 sound's own patch (a DIGITAL sound converted: and
                                                          the DIGITAL values) */
@@ -1020,8 +1021,8 @@ function readLibraryFile(obj, ctx) {
   const noFm4 = historical && !(ctx.engines || []).includes("DIGITAL");
   const perc = (pt, pe0) => (historical && pt && fromPerc(pt, ctx.engines, pe0)) || pt;
   const fm4 = (pt, nm, pe0) => (nm === "DIGITAL" && noFm4 ? fromDigital(pt, ctx.engines, pe0) || pt : perc(pt, pe0));
-  const engIndex = (name, idx, fileEngines) => {
-    if (stable) return Number.isInteger(idx) && idx >= 0 && idx < 64 ? idx : -1;
+  const engIndex = (name, idx, fileEngines, sourceStable = stable) => {
+    if (sourceStable) return Number.isInteger(idx) && idx >= 0 && idx < 64 ? idx : -1;
     const nm = name || (fileEngines || [])[idx];
     if (ctx.engines && ctx.engines.length) {
       if (nm) return ctx.engines.indexOf(nm);
@@ -1050,13 +1051,16 @@ function readLibraryFile(obj, ctx) {
   for (const x of obj.patches) {
     if (!x || !Array.isArray(x.params)) { skipped++; continue; }
     const nm = x.engineName || (obj.engines || [])[x.engine | 0];
-    const digital = nm === "DIGITAL" && noFm4;
-    const e = digital ? 1 : engIndex(x.engineName, stable ? x.engine : x.engine | 0, obj.engines);
+    const patchStable = stable || x.engineIds === 64;
+    const digital = !patchStable && nm === "DIGITAL" && noFm4;
+    const e = digital ? 1 : engIndex(x.engineName, patchStable ? x.engine : x.engine | 0, obj.engines, patchStable);
     if (e < 0) { skipped++; continue; }
     const p = remapParams(x.params, fileKeys, ctx.keys, ctx.pe0);
     const pe0 = ctx.keys && ctx.pe0 ? ctx.pe0 : obj.pE0 ?? p.length - 8;
-    const pt = digital ? fromDigital({ ...x, engine: e, p }, ctx.engines, pe0) || cleanPatch({ ...x, engine: e, p, engineIds: stable ? 64 : undefined })
-      : perc(cleanPatch({ ...x, engine: e, engineIds: stable ? 64 : undefined, engineName: stable ? x.engineName || (obj.engines || [])[x.engine] || "" : (ctx.engines || [])[e] || x.engineName || (obj.engines || [])[x.engine], p }), pe0);
+    const mapped = cleanPatch({ ...x, engine: e, engineIds: patchStable ? 64 : undefined,
+      engineName: patchStable ? x.engineName || (obj.engines || [])[x.engine] || ""
+        : (ctx.engines || [])[e] || x.engineName || (obj.engines || [])[x.engine], p });
+    const pt = digital ? fromDigital(mapped, ctx.engines, pe0) || mapped : patchStable ? mapped : perc(mapped, pe0);
     if (!pt) { skipped++; continue; }
     out.push(cleanPatch(pt));
   }

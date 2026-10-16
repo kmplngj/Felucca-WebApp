@@ -60,6 +60,14 @@ for (const E of [app, legacy]) {
   assert.equal(moved.engine, 2, "historical patch maps by source name on catalog destination");
   const movedFile = E.readLibraryFile({ format: "felucca-library", version: 1, engines: ["ANALOG", "PHASE"], patches: [{ engine: 1, params: p }] }, ctx);
   assert.equal(movedFile.patches[0].engine, 2, "historical library uses its own engine-name table");
+  const mixed = E.libraryFile("library", [
+    { name: "old phase", engine: 1, engineName: "PHASE", p },
+    { name: "stable future", engine: 40, engineName: "FUTURE", engineIds: 64, p },
+  ], { engines: ["ANALOG", "PHASE"] });
+  assert.equal(mixed.engineIds, undefined, "one stable patch cannot promote historical entries");
+  assert.equal(mixed.patches[1].engineIds, 64);
+  const mixedRead = E.readLibraryFile(mixed, ctx);
+  eq(mixedRead.patches.map((p) => p.engine), [2, 40]);
   const oldDigital = E.readLibraryFile({ format: "felucca-patch", engine: 1, engineName: "DIGITAL", p }, ctx).patches[0];
   assert.equal(oldDigital.engine, 12); assert.equal(oldDigital.fm4.length, 111);
   const oldPerc = E.readLibraryFile({ format: "felucca-patch", engine: 4, engineName: "SAMPLE", p: p.map((v, k) => k === 103 ? 4 : v) }, ctx).patches[0];
@@ -167,6 +175,20 @@ console.log("backup: PER4/PER6/extended opaque round trips, restore order, prefl
   classicState.libMeta = { engines: ["ANALOG", "PHASE"], keys: d.keys };
   await assert.rejects(adoptClassic(missingPhase), /Cannot migrate unavailable historical engine PHASE/);
   assert.equal(classicState.lib[0].engine, 1); assert.equal(classicState.lib[0].engineIds, undefined);
+  for (const name of ["", "-"]) {
+    unresolved.patches[0].engineName = name; unresolved.meta.engines = [];
+    await assert.rejects(unresolved.adopt(d), /Cannot migrate unavailable historical engine/);
+    assert.equal(unresolved.patches[0].engineIds, undefined);
+    classicState.lib[0].engineName = name; classicState.libMeta.engines = [];
+    await assert.rejects(adoptClassic(d), /Cannot migrate unavailable historical engine/);
+    assert.equal(classicState.lib[0].engineIds, undefined);
+  }
+  d.info = { engines: ["ANALOG", "PHASE", "LOFI"] };
+  const stablePhase = { engine: 2, engineName: "PHASE", engineIds: 64 };
+  assert.equal(d.engineOk(stablePhase), false, "legacy compact engine names must match even for stable source patches");
+  const classicEngineOk = vm.runInNewContext(html.slice(html.indexOf("const engineOk ="), html.indexOf("/* a full parameter set", html.indexOf("const engineOk ="))) + ";engineOk", { dev: d, engineAvailable: app.engineAvailable });
+  assert.equal(classicEngineOk(stablePhase), false);
+  d.info = info;
   const st = memoryStore(), lib = new Library(st); await lib.init(); lib.meta = { engines: names, keys: null, engineIds: 64 };
   const fm = { name: "absent", engine: 12, engineName: "-", engineIds: 64, p: new Array(111).fill(0), fm6: app.FM6.INIT_PK };
   await lib.add([fm, { ...fm, engine: 40 }]); d.keys = Array.from({ length: 111 }, (_, k) => `P${k}`);
