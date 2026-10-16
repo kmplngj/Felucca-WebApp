@@ -6,7 +6,9 @@
 export const BACKUP_IDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 32, 33, 34];
 const BACKUP_IDS_V2 = BACKUP_IDS.filter((id) => id !== 9);              // 1.0..1.0.2, and their archives
 const BACKUP_IDS_V1 = BACKUP_IDS_V2.filter((id) => id !== 8);           // firmware before FM6, and its archives
-const idsOf = (n) => [BACKUP_IDS, [...BACKUP_IDS, 20], [...BACKUP_IDS, 20, 21], BACKUP_IDS_V2, BACKUP_IDS_V1].find((ids) => ids.length === n) || null;
+// Optional extensions are independent: a SLICE-only build has the same count as an FM6-only build.
+const idsOf = (actual) => [BACKUP_IDS, [...BACKUP_IDS, 20], [...BACKUP_IDS, 21], [...BACKUP_IDS, 20, 21], BACKUP_IDS_V2, BACKUP_IDS_V1]
+  .find((ids) => ids.length === actual.length && ids.every((id, i) => id === actual[i])) || null;
 export const BACKUP_CMD = { LIST: 65, GET: 66, PUT: 67 };
 const BACKUP_CHUNK = 256;
 export const bkU32 = (n) => Array.from({ length: 5 }, (_, i) => (n >>> (i * 7)) & (i === 4 ? 15 : 127));
@@ -49,7 +51,7 @@ function bkCheck(rc) {
 export function bkManifest(a) {
   if (a[0] !== 1) throw new Error("Unsupported archive protocol");
   bkCheck(a[1]);
-  const ids = idsOf(a[2]);
+  const ids = idsOf(Array.from({ length: a[2] }, (_, i) => a[3 + i * 11]));
   if (!ids || a.length !== 3 + a[2] * 11) throw new Error("Incomplete archive manifest");
   return ids.map((id, i) => {
     const p = 3 + i * 11;
@@ -62,7 +64,7 @@ export function bkManifest(a) {
 const bkBase64 = (bytes) => { let s = ""; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); };
 export function readBackup(file) {
   if (typeof file === "string") file = JSON.parse(file);
-  const ids = file && Array.isArray(file.objects) ? idsOf(file.objects.length) : null;
+  const ids = file && Array.isArray(file.objects) ? idsOf(file.objects.map((o) => o && o.id)) : null;
   if (!file || file.format !== "felucca-backup" || file.version !== 1 || !ids)
     throw new Error("Not a complete Felucca backup");
   const objects = file.objects.map((o, i) => {

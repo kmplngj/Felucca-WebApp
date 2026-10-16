@@ -41,9 +41,10 @@ Both editors read the versioned engine catalog (`INFO 49 01`) and use the advert
 unsupported capability block stops the connection. Engine numbers stay stable: missing engines show
 `N/A (id)`, and their saved sounds, parameters, drum grids and FM6 patches remain exportable. Unavailable
 engines cannot be selected, auditioned or written into a device preset. Library files marked `engineIds: 64`
-keep those numbers across different catalogs, including engines unknown to this editor. Earlier library files
+keep those numbers across different catalogs, including engines unknown to this editor. Earlier library files resolve engine names using their own source layout before adopting stable IDs, and
 retain their documented DIGITAL-to-FM6 and SAMPLE-PERC-to-DRUM migrations when those replacements exist.
-Projects and complete backup objects retain their original bytes.
+If a stored historical library names an engine absent from the destination, connection stops before changing the
+library; reconnect a build containing that engine to migrate it. Projects and complete backup objects retain their original bytes.
 
 Settings backup objects stay **PER4** while no favourite uses an engine id from 14 upward. Those settings remain
 restorable on original firmware 1.6 and older. A favourite on a higher id requires **PER6** settings: the editors

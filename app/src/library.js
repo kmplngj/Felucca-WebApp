@@ -108,29 +108,39 @@ export class Library {
   async adopt(dev) {
     const keys = dev.keys, engines = dev.info.engines, changed = [];
     const relayout = (this.meta.keys && !sameKeys(this.meta.keys, keys)) || (this.meta.engines && !sameKeys(this.meta.engines, engines));
-    const stable = !!dev.info.engineCatalog || this.meta.engineIds === 64;
+    const stable = this.meta.engineIds === 64;
+    const targetStable = !!dev.info.engineCatalog || stable;
     const historical = this.meta.engineIds !== 64;
     const noFm4 = historical && (engines || [])[1] === "-";
+    // Resolve every historical name before changing or persisting any patches. A missing name
+    // has no trustworthy stable ID; retain the original library until a compatible layout is available.
+    for (const p of this.patches) {
+      const name = p.engineName || (this.meta.engines || [])[p.engine];
+      if (!stable && p.engineIds !== 64 && name && name !== "-" && !engines.includes(name) &&
+          !(noFm4 && name === "DIGITAL" && engines.includes("FM6")))
+        throw new Error(`Cannot migrate unavailable historical engine ${name}; reconnect firmware that includes it`);
+    }
     for (const p of this.patches) {
       const name = p.engineName || (this.meta.engines || [])[p.engine];
       const digital = noFm4 && p.engineIds !== 64 && !p.fm6 && (name === "DIGITAL" || ((!name || name === "-") && p.engine === 1));
       const pe0 = () => (keys && p.p.length === keys.length ? dev.info.pe0 : p.p.length - 8);   /* (E1..E8: the last 8) */
       const perc = historical && p.engineIds !== 64 && !digital && !!fromPerc({ ...p, engineName: name }, engines, p.p.length - 8);
-      if (!relayout && !digital && !perc && (!stable || p.engineIds === 64)) continue;
+      if (!relayout && !digital && !perc && (!targetStable || p.engineIds === 64)) continue;
       if (relayout) p.p = remapParams(p.p, this.meta.keys, keys);
       const pt = digital ? fromDigital(p, engines, pe0()) : perc ? fromPerc({ ...p, engineName: name }, engines, pe0()) : null;
       if (pt) Object.assign(p, cleanPatch(pt));
       else {
-        const e = stable ? p.engine : name ? engines.indexOf(name) : p.engine;
-        if (e >= 0) { p.engine = e; if (!stable) p.engineName = engines[e]; }
+        const sourceStable = stable || p.engineIds === 64;
+        const e = sourceStable ? p.engine : name ? engines.indexOf(name) : p.engine;
+        if (e >= 0) { p.engine = e; if (!sourceStable) p.engineName = engines[e]; }
       }
-      if (stable) {
+      if (targetStable) {
         p.engineIds = 64;
         if ((!p.engineName || p.engineName === "-") && engines[p.engine] && engines[p.engine] !== "-") p.engineName = engines[p.engine];
       }
       changed.push(p);
     }
-    this.meta = { keys, engines, pe0: dev.info.pe0, engineIds: stable ? 64 : undefined };
+    this.meta = { keys, engines, pe0: dev.info.pe0, engineIds: targetStable ? 64 : undefined };
     if (changed.length) await this.write(changed);
     try { if (this.persistent) await this.store.setMeta("layout", this.meta); } catch (e) { console.warn(e); }
     this.changed();

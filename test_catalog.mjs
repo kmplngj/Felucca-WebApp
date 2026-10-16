@@ -56,6 +56,10 @@ for (const E of [app, legacy]) {
   assert.ok(rows.some((r) => !r.user && r.engine === 14 && r.favorite));
   // Old settings/layouts still migrate explicitly retired sounds on a catalog destination.
   const p = new Array(111).fill(0), ctx = { engineIds: 64, engines: names, pe0: 103 };
+  const moved = E.readLibraryFile({ format: "felucca-patch", engine: 1, engineName: "PHASE", p }, ctx).patches[0];
+  assert.equal(moved.engine, 2, "historical patch maps by source name on catalog destination");
+  const movedFile = E.readLibraryFile({ format: "felucca-library", version: 1, engines: ["ANALOG", "PHASE"], patches: [{ engine: 1, params: p }] }, ctx);
+  assert.equal(movedFile.patches[0].engine, 2, "historical library uses its own engine-name table");
   const oldDigital = E.readLibraryFile({ format: "felucca-patch", engine: 1, engineName: "DIGITAL", p }, ctx).patches[0];
   assert.equal(oldDigital.engine, 12); assert.equal(oldDigital.fm4.length, 111);
   const oldPerc = E.readLibraryFile({ format: "felucca-patch", engine: 4, engineName: "SAMPLE", p: p.map((v, k) => k === 103 ? 4 : v) }, ctx).patches[0];
@@ -116,6 +120,18 @@ async function roundtrip(settingsBytes, catalogInfo) {
   }
   return parsed;
 }
+// Each extension is optional independently, including the previously rejected SLICE-only inventory.
+for (const caps of [1, 3, 5, 7]) {
+  const ids = [...BACKUP_IDS, ...(caps & 2 ? [20] : []), ...(caps & 4 ? [21] : [])];
+  const objects = ids.map((id) => [id, id === 0 ? new Uint8Array(3388) : id === 1 ? settings(false) : new Uint8Array(0)]);
+  const src = device(objects, caps);
+  const archive = await captureBackup(src.request, "v1.6", () => {}, { info: { ...info, backupExtraCaps: caps } });
+  eq(readBackup(JSON.stringify(archive)).objects.map((o) => o.id), ids);
+  const dst = device([], caps); await restoreBackup(dst.request, archive, () => {}, { info: { ...info, backupExtraCaps: caps } });
+  for (const [id, bytes] of objects) if (bytes.length) eq(dst.objects.get(id), bytes);
+  const bad = structuredClone(archive); bad.objects[2].id = 99;
+  assert.throws(() => readBackup(bad), /complete Felucca backup/);
+}
 const per4Archive = await roundtrip(settings(false), info), per6Archive = await roundtrip(settings(true), info);
 assert.equal(settingsFormat(per4Archive), "PER4"); assert.equal(settingsFormat(per6Archive), "PER6");
 await assert.rejects(captureBackup(device([[0,new Uint8Array(3388)],[1,settings(false)]]).request,"v1.6",()=>{}, {info:{...info,backupExtraCaps:7}}), /Incomplete extended/);
@@ -128,6 +144,29 @@ console.log("backup: PER4/PER6/extended opaque round trips, restore order, prefl
   assert.equal(await d.loadPreset(11, 0), false); assert.equal(await d.initSound(), false);
   await d.setParam(0, 103, 99); assert.equal(d.dump.p[103], -63); assert.equal(requests, 0);
   assert.equal(d.engineOk({ engine: 11 }), false); assert.equal(d.engineOk({ engine: -1 }), false);
+  // Persisted legacy data must resolve names before being stamped with the destination's stable-ID marker.
+  const oldStore = memoryStore(), oldLib = new Library(oldStore); await oldLib.init();
+  d.keys = Array.from({ length: 111 }, (_, k) => `P${k}`);
+  oldLib.meta = { engines: ["ANALOG", "PHASE"], keys: d.keys };
+  await oldLib.add([{ name: "legacy phase", engine: 1, engineName: "PHASE", p: new Array(111).fill(0) }]);
+  await oldLib.adopt(d); assert.equal(oldLib.patches[0].engine, 2); assert.equal(oldLib.patches[0].engineIds, 64);
+  assert.equal((await oldStore.all())[0].engine, 2);
+  const classicState = { lib: [{ id: "old", engine: 1, engineName: "PHASE", p: new Array(111).fill(0) }],
+    libMeta: { engines: ["ANALOG", "PHASE"], keys: d.keys }, sameKeys: app.sameKeys, remapParams: app.remapParams,
+    fromDigital: app.fromDigital, fromPerc: app.fromPerc, cleanPatch: app.cleanPatch,
+    libWrite: async () => {}, store: { setMeta: async () => {} }, renderLib: () => {}, console };
+  const adoptClassic = vm.runInNewContext(html.slice(html.indexOf("async function libAdopt(d)"), html.indexOf("const engineOk =")) + ";libAdopt", classicState);
+  await adoptClassic(d); assert.equal(classicState.lib[0].engine, 2); assert.equal(classicState.lib[0].engineIds, 64);
+  const missingPhase = { ...d, info: { ...info, engines: names.map((n) => n === "PHASE" ? "-" : n) } };
+  const unresolved = new Library(memoryStore()); await unresolved.init();
+  unresolved.meta = { engines: ["ANALOG", "PHASE"], keys: d.keys };
+  await unresolved.add([{ name: "keep old", engine: 1, engineName: "PHASE", p: new Array(111).fill(0) }]);
+  await assert.rejects(unresolved.adopt(missingPhase), /Cannot migrate unavailable historical engine PHASE/);
+  assert.equal(unresolved.patches[0].engine, 1); assert.equal(unresolved.patches[0].engineIds, undefined);
+  classicState.lib = [{ engine: 1, engineName: "PHASE", p: new Array(111).fill(0) }];
+  classicState.libMeta = { engines: ["ANALOG", "PHASE"], keys: d.keys };
+  await assert.rejects(adoptClassic(missingPhase), /Cannot migrate unavailable historical engine PHASE/);
+  assert.equal(classicState.lib[0].engine, 1); assert.equal(classicState.lib[0].engineIds, undefined);
   const st = memoryStore(), lib = new Library(st); await lib.init(); lib.meta = { engines: names, keys: null, engineIds: 64 };
   const fm = { name: "absent", engine: 12, engineName: "-", engineIds: 64, p: new Array(111).fill(0), fm6: app.FM6.INIT_PK };
   await lib.add([fm, { ...fm, engine: 40 }]); d.keys = Array.from({ length: 111 }, (_, k) => `P${k}`);

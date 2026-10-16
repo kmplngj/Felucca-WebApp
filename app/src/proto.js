@@ -1015,7 +1015,7 @@ function libraryFile(kind, patches, ctx) {
    one (the set retired after 1.0.2) as DRUM's kit (fromPerc) */
 function readLibraryFile(obj, ctx) {
   if (!obj || typeof obj !== "object") throw new Error("not JSON");
-  const stable = ctx.engineIds === 64 || obj.engineIds === 64;
+  const stable = obj.engineIds === 64;
   const historical = obj.engineIds !== 64;
   const noFm4 = historical && !(ctx.engines || []).includes("DIGITAL");
   const perc = (pt, pe0) => (historical && pt && fromPerc(pt, ctx.engines, pe0)) || pt;
