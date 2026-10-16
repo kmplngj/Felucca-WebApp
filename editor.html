@@ -4653,7 +4653,7 @@ async function libAdopt(d) {
   const relayout = (libMeta.keys && !sameKeys(libMeta.keys, keys)) || (libMeta.engines && !sameKeys(libMeta.engines, engines));
   const stable = lib.length > 0 && lib.every((p) => p.engineIds === 64);
   const targetStable = !!d.info.engineCatalog || stable;
-  const historical = libMeta.engineIds !== 64;
+  const historical = !stable;
   const noFm4 = historical && (engines || [])[1] === "-";
   // Resolve every historical name before changing or persisting any patches. A missing name
   // has no trustworthy stable ID; retain the original library until a compatible layout is available.
@@ -5004,7 +5004,7 @@ $("bkexport").addEventListener("click", () => libOp(async (d, rqf) => {
     if (!x.used) continue;
     sayK("readingBank", ` ${slotName(x.slot)}`);
     const u = await bank.get(rqf, dev.info, x.slot);
-    if (u.used) out.push({ name: u.name, engine: u.engine, p: u.p, pattern: u.pattern, grid: u.grid, slot: x.slot, fm6: u.fm6,
+    if (u.used) out.push({ name: u.name, engine: u.engine, engineIds: dev.info.engineCatalog ? 64 : undefined, p: u.p, pattern: u.pattern, grid: u.grid, slot: x.slot, fm6: u.fm6,
       engineName: reservedFm4(dev.info.engines, u.engine) ? "DIGITAL" : dev.info.engines[u.engine] });   /* (DIGITAL's values) */
   }
   download(`felucca-bank-${today()}.json`, libraryFile("bank", out, libCtx()));

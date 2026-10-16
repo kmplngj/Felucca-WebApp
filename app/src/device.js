@@ -380,7 +380,7 @@ export class Device {
         if (!x.used) continue;
         this.emit("progress", { what: "bank", n: x.slot + 1, total: this.bank.total });
         const u = await bank.get((r, o) => this.rq(r, o), this.info, x.slot);
-        if (u.used) out.push({ name: u.name, engine: u.engine, p: u.p, pattern: u.pattern, grid: u.grid, slot: x.slot, fm6: u.fm6,
+        if (u.used) out.push({ name: u.name, engine: u.engine, engineIds: this.info.engineCatalog ? 64 : undefined, p: u.p, pattern: u.pattern, grid: u.grid, slot: x.slot, fm6: u.fm6,
           ...(u.category ? { category: u.category } : {}),
           engineName: reservedFm4(this.info.engines, u.engine) ? "DIGITAL" : this.info.engines[u.engine] });
       }

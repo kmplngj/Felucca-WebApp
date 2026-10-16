@@ -203,6 +203,36 @@ console.log("backup: PER4/PER6/extended opaque round trips, restore order, prefl
   classicState.lib = [{ engine: 2, engineName: "PHASE", engineIds: 64, p: new Array(111).fill(0) }, { engine: 1, engineName: "PHASE", p: new Array(111).fill(0) }];
   classicState.libMeta = { engines: compact.info.engines, keys: d.keys, engineIds: 64 };
   await adoptClassic(d); eq(classicState.lib.map((p) => p.engine), [2, 2]);
+  for (const [engineName, engine, expected] of [["DIGITAL", 1, 12], ["SAMPLE", 4, 10]]) {
+    const old = { engineName, engine, p: new Array(111).fill(0) }; if (engineName === "SAMPLE") old.p[103] = 4;
+    const migrations = new Library(memoryStore()); await migrations.init();
+    migrations.meta = { keys: d.keys, engines: names, engineIds: 64 };
+    await migrations.add([{ engine: 2, engineName: "PHASE", engineIds: 64, p: new Array(111).fill(0) }, old]);
+    await migrations.adopt(d); assert.equal(migrations.patches[1].engine, expected, "mixed imported legacy conversion ignores stale metadata marker");
+    classicState.lib = [{ engine: 2, engineName: "PHASE", engineIds: 64, p: new Array(111).fill(0) }, structuredClone(old)];
+    classicState.libMeta = { keys: d.keys, engines: names, engineIds: 64 };
+    await adoptClassic(d); assert.equal(classicState.lib[1].engine, expected);
+  }
+  // Both bulk exporters mark retained unavailable slots as stable, just like single-slot capture.
+  const missing = { used: true, name: "retained", engine: 12, p: new Array(111).fill(0) };
+  const bankDev = new Device(null); bankDev.info = { ...info, engines: names.map((n, e) => e === 12 ? "-" : n) };
+  bankDev.bank = { total: 1, slots: [{ slot: 0, used: true }] }; bankDev.op = (fn) => fn(); bankDev.emit = () => {};
+  const originalGet = app.bank.get; app.bank.get = async () => missing;
+  let bulk;
+  try { bulk = await bankDev.bankAll(); } finally { app.bank.get = originalGet; }
+  assert.equal(bulk[0].engineIds, 64);
+  const bulkFile = app.libraryFile("bank", bulk, { engines: bankDev.info.engines });
+  assert.equal(app.readLibraryFile(bulkFile, { engines: names }).patches[0].engine, 12);
+  let exportHandler, classicBulk;
+  const startExport = html.indexOf('$("bkexport").addEventListener');
+  vm.runInNewContext(html.slice(startExport, html.indexOf('\n}));', startExport) + 5), {
+    $: () => ({ addEventListener: (_, fn) => { exportHandler = fn; } }),
+    libOp: (fn) => fn(bankDev, () => {}), dev: bankDev, bank: { get: async () => missing },
+    sayK: () => {}, slotName: () => "U01", reservedFm4: app.reservedFm4, today: () => "test",
+    libraryFile: legacy.libraryFile, libCtx: () => ({ engines: bankDev.info.engines }), download: (_, file) => { classicBulk = file; },
+  });
+  await exportHandler(); assert.equal(classicBulk.engineIds, 64);
+  assert.equal(legacy.readLibraryFile(classicBulk, { engines: names }).patches[0].engine, 12);
   const st = memoryStore(), lib = new Library(st); await lib.init(); lib.meta = { engines: names, keys: null, engineIds: 64 };
   const fm = { name: "absent", engine: 12, engineName: "-", engineIds: 64, p: new Array(111).fill(0), fm6: app.FM6.INIT_PK };
   await lib.add([fm, { ...fm, engine: 40 }]); d.keys = Array.from({ length: 111 }, (_, k) => `P${k}`);

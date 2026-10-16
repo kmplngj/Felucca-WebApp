@@ -110,7 +110,7 @@ export class Library {
     const relayout = (this.meta.keys && !sameKeys(this.meta.keys, keys)) || (this.meta.engines && !sameKeys(this.meta.engines, engines));
     const stable = this.patches.length > 0 && this.patches.every((p) => p.engineIds === 64);
     const targetStable = !!dev.info.engineCatalog || stable;
-    const historical = this.meta.engineIds !== 64;
+    const historical = !stable;
     const noFm4 = historical && (engines || [])[1] === "-";
     // Resolve every historical name before changing or persisting any patches. A missing name
     // has no trustworthy stable ID; retain the original library until a compatible layout is available.
