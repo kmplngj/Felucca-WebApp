@@ -425,6 +425,48 @@ class Reader {
   s() { let s = ""; for (;;) { const c = this.b(); if (!c) return s; s += String.fromCharCode(c); } }
 }
 
+/* Engine ids are stable 0..63. Only a wholly absent catalog permits the legacy fallback.
+   Walk tag boundaries, never search arbitrary data bytes for a tag. Reject a present but unusable catalog
+   before the connection can issue writes (including truncated/unsupported versions). */
+function readEngineCatalog(trailer, info) {
+  info.engineCatalog = null;
+  info.userEngine = info.nengines;
+  info.backupExtraCaps = 0;
+  if (trailer.length === 1 && trailer[0] !== 0x49 && trailer[0] !== 0x58) return; // historical untagged PR flag
+  const lengths = { 0x55: 1, 0x4d: 2, 0x42: 1, 0x46: 2, 0x53: 1, 0x50: 1, 0x4E: 1,
+    0x52: 1, 0x4C: 1, 0x41: 2, 0x54: 1, 0x57: 1, 0x56: 1, 0x43: 1, 0x4B: 1, 0x45: 1, 0x58: 1 };
+  for (let q = trailer[0] === 16 ? 1 : 0; q < trailer.length;) {
+    const tag = trailer[q];
+    if (tag === 0x49) {
+      const bits = trailer.slice(q + 4, q + 14);
+      if (trailer[q + 1] !== 1 || trailer[q + 2] !== 64 || trailer[q + 3] !== 127 ||
+          info.engineCatalog || bits.length !== 10 || bits.some((b) => !Number.isInteger(b) || b < 0 || b > 127) ||
+          (bits[9] & 126) || info.nengines > 64)
+        throw new Error("Invalid or unsupported engine catalog; update the editor before connecting");
+      info.engineCatalog = { version: 1, size: 64, bitmap: bits };
+      info.userEngine = 127;
+      q += 14;
+      continue;
+    }
+    const n = lengths[tag];
+    if (!n || trailer[q + 1] !== 1 || q + 2 + n > trailer.length) {
+      // An unrecognized trailer cannot establish that the catalog is absent. Legacy INFO ends at a tag boundary.
+      throw new Error("Invalid or unsupported INFO capability block; update the editor before connecting");
+    }
+    if (tag === 0x58) info.backupExtraCaps = trailer[q + 2] & 7;
+    q += 2 + n;
+  }
+}
+function engineAvailable(info, id) {
+  if (!info || !Number.isInteger(id) || id < 0 || id >= info.nengines || !info.engines[id] || info.engines[id] === "-") return false;
+  const c = info.engineCatalog;
+  return !c || !!(c.bitmap[Math.floor(id / 7)] & (1 << (id % 7)));
+}
+const userEngine = (info) => info.engineCatalog ? info.userEngine : info.nengines;
+const catalogLabel = (info, id) => engineAvailable(info, id) ? info.engines[id] : `N/A (${id})`;
+const drumEngine = (info, id) => info.engineCatalog ? id === 10 : info.engines[id] === "DRUM";
+const fm6Engine = (info, id) => info.engineCatalog ? id === 12 : info.engines[id] === "FM6";
+
 const parse = {
   [CMD.INFO](a) {
     const r = new Reader(a);
@@ -445,15 +487,42 @@ const parse = {
     o.fm6 = null;                                 /* FM6 patches (cmds 68..71): the factory and bank slot counts */
     o.syncCaps = 0;                               /* live sync: bit 0 WATCH while on keeps pending pushes, bit 1 no RELOAD */
     o.ratchet = 0;                                /* a step's ratchet (STEP_SET's byte after the chance), 0 = none */
+    o.locks = 0;                                  /* parameter locks (MOTION ops 5..7), 0 = none */
     for (const p of [8, 11]) if (o.motionMax && trailer[p] === 0x46 && trailer[p + 1] === 1) {   /* for the editor's */
       o.fm6 = { factory: trailer[p + 2], bank: trailer[p + 3], caps: 0 };                         /* PRESET / G_ENGSEL */
       if (trailer[p + 4] === 0x53 && trailer[p + 5] === 1) o.syncCaps = trailer[p + 6] & 3;
       /* FM6 v2 (1.0.3): bit 0 no bank (SLOT F1..F8, 8 = OWN), bit 1 the user presets carry their patch (target 3) */
       if (trailer[p + 7] === 0x50 && trailer[p + 8] === 1) o.fm6.caps = trailer[p + 9] & 3;
+      /* MENU settings (1.0.4): the items MENU_DESC offers (index 0..menuCount-1) */
+      if (trailer[p + 7] === 0x50 && trailer[p + 10] === 0x4E && trailer[p + 11] === 1) o.menuCount = trailer[p + 12];
       let r = trailer[p + 7] === 0x50 ? p + 10 : p + 7;                                   /* RATCH after FM6 v2 */
       if (trailer[r] === 0x4E && trailer[r + 1] === 1) r += 3;                            /* and the MENU settings (1.0.4) */
-      if (o.syncCaps && trailer[r] === 0x52 && trailer[r + 1] === 1) o.ratchet = trailer[r + 2];   /* RATCH: max hits */
+      if (o.syncCaps && trailer[r] === 0x52 && trailer[r + 1] === 1) { o.ratchet = trailer[r + 2]; r += 3; }   /* RATCH: max hits (1.0.5) */
+      if (o.ratchet && trailer[r] === 0x4C && trailer[r + 1] === 1) o.locks = trailer[r + 2];   /* parameter locks (1.1) */
+      /* the tagged blocks from 53 01 on, walked by their known lengths (an unknown tag ends the walk): 1.2's 57 01 n =
+         SONG sections with a slot per track (n lanes; SONG ops 4..7) */
+      /* (1.4.1's 56 01 n: FM6's voice bank, n voices: cmds 74..77, SLOT 9.. = B1..Bn) */
+      const LEN = { 0x53: 1, 0x50: 1, 0x4E: 1, 0x52: 1, 0x4C: 1, 0x41: 2, 0x54: 1, 0x57: 1, 0x56: 1, 0x43: 1, 0x4B: 1, 0x45: 1 };   /* (1.5.5's 4B 01 n: a step's condition, n of them) */   /* (1.5's 43 01 n: MIDI LEARN, cmds 78, 79) */
+      for (let q = p + 4; q + 2 < trailer.length && trailer[q + 1] === 1 && LEN[trailer[q]]; q += 2 + LEN[trailer[q]]) {
+        if (trailer[q] === 0x57) o.songLanes = trailer[q + 2];
+        if (trailer[q] === 0x41 && q + 3 < trailer.length) o.motionCap = trailer[q + 2] | trailer[q + 3] << 7;   /* 1.2: 128 */
+        if (trailer[q] === 0x54) o.nudge = trailer[q + 2];                                                      /* 1.2: 16 */
+        if (trailer[q] === 0x56) o.fm6Bank = trailer[q + 2];                                                    /* 1.4.1: 32 */
+        if (trailer[q] === 0x43) o.midiLearn = trailer[q + 2];                                                  /* 1.5: 16 */
+        if (trailer[q] === 0x4B) o.cond = trailer[q + 2];                                                       /* 1.5.5: 11 */
+        if (trailer[q] === 0x45) o.customPalette = trailer[q + 2];                                              /* 1.6: 5 (CUSTOM palette, cmds 80, 81) */
+      }
     }
+    o.menuCount = o.menuCount || 0;
+    o.songLanes = o.songLanes || 0;
+    o.motionCap = o.motionCap || 0;               /* 0: MOTION ops 0..7 only (64 records); else op 8 lists them all */
+    o.nudge = o.nudge || 0;                       /* 0: no nudge byte in steps */
+    o.fm6Bank = o.fm6Bank || 0;                   /* FM6's voice bank (1.4.1): 0 none */
+    o.midiLearn = o.midiLearn || 0;               /* MIDI LEARN's entries (1.5): 0 none */
+    o.cond = o.cond || 0;                         /* a step's conditions (1.5.5): 0 none (no condition byte in steps) */
+    o.customPalette = o.customPalette || 0;       /* CUSTOM palette's colours (1.6): 0 none (no PALETTE_GET / _SET) */
+    readEngineCatalog(trailer, o);
+    o.categories = o.motionCap > 0;               /* user preset categories (1.2 / 1.4, with the same tags) */
     return o;
   },
   [CMD.UI_STATE](a) {
@@ -1118,6 +1187,7 @@ function cleanPatch(pt) {
     tags: Array.isArray(pt.tags) ? [...new Set(pt.tags.map((x) => String(x).trim()).filter(Boolean))] : [],
     created: pt.created || now, modified: pt.modified || pt.created || now,
   };
+  if (pt.engineIds === 64) o.engineIds = 64;
   if (Number.isInteger(pt.slot)) o.slot = pt.slot;
   if (Array.isArray(pt.fm6) && pt.fm6.length === FM6.PACKED) o.fm6 = pt.fm6.map((x) => (x | 0) & 127);   /* (a converted */
   if (Array.isArray(pt.fm4)) o.fm4 = pt.fm4.map((v) => (Number.isFinite(v) ? Math.round(v) : null));    /* DIGITAL sound) */
@@ -1128,12 +1198,13 @@ function cleanPatch(pt) {
 function libraryFile(kind, patches, ctx) {
   return {
     format: LIB.FORMAT, version: LIB.VERSION, kind, firmware: ctx.firmware || "",
-    pCount: ctx.keys ? ctx.keys.length : 0, pE0: ctx.pe0 ?? null, paramLabels: ctx.keys || [], engines: ctx.engines || [],
+    pCount: ctx.keys ? ctx.keys.length : 0, pE0: ctx.pe0 ?? null, paramLabels: ctx.keys || [], engines: ctx.engines || [], engineIds: (patches.length && patches.every((p) => p.engineIds === 64) ? 64 : undefined),
     exported: new Date().toISOString(),
     patches: patches.map((x) => {
       const c = cleanPatch(x);
       const o = { name: c.name, engine: c.engine, engineName: c.engineName || (ctx.engines || [])[c.engine] || "",
         params: c.p, pattern: c.pattern, tags: c.tags, created: c.created, modified: c.modified };
+      if (c.engineIds === 64) o.engineIds = 64;
       if (c.grid) o.grid = c.grid;
       if (c.fm6) { o.fm6 = c.fm6; if (c.fm4) o.fm4 = c.fm4; }   /* an FM6 sound's own patch (a DIGITAL sound converted: and
                                                          the DIGITAL values) */
@@ -1147,10 +1218,13 @@ function libraryFile(kind, patches, ctx) {
    one (the set retired after 1.0.2) as DRUM's kit (fromPerc) */
 function readLibraryFile(obj, ctx) {
   if (!obj || typeof obj !== "object") throw new Error("not JSON");
-  const noFm4 = !(ctx.engines || []).includes("DIGITAL");
-  const perc = (pt, pe0) => (pt && fromPerc(pt, ctx.engines, pe0)) || pt;
-  const fm4 = (pt, nm, pe0) => (nm === "DIGITAL" && noFm4 ? fromDigital(pt, ctx.engines, pe0) : perc(pt, pe0));
-  const engIndex = (name, idx, fileEngines) => {
+  const stable = obj.engineIds === 64;
+  const historical = obj.engineIds !== 64;
+  const noFm4 = historical && !(ctx.engines || []).includes("DIGITAL");
+  const perc = (pt, pe0) => (historical && pt && fromPerc(pt, ctx.engines, pe0)) || pt;
+  const fm4 = (pt, nm, pe0) => (nm === "DIGITAL" && noFm4 ? fromDigital(pt, ctx.engines, pe0) || pt : perc(pt, pe0));
+  const engIndex = (name, idx, fileEngines, sourceStable = stable) => {
+    if (sourceStable) return Number.isInteger(idx) && idx >= 0 && idx < 64 ? idx : -1;
     const nm = name || (fileEngines || [])[idx];
     if (ctx.engines && ctx.engines.length) {
       if (nm) return ctx.engines.indexOf(nm);
@@ -1165,7 +1239,7 @@ function readLibraryFile(obj, ctx) {
     if (e < 0) return { patches: [], skipped: 1, keys: null };
     const p = ctx.keys && ctx.pe0 && obj.p.length !== ctx.keys.length ? tailParams(obj.p, ctx.keys.length, ctx.pe0)
       : obj.p.slice(0, ctx.keys ? ctx.keys.length : obj.p.length);
-    const pt = fm4({ name: obj.presetName || obj.engineName || "PATCH", engine: e, engineName: obj.engineName, p,
+    const pt = fm4({ name: obj.presetName || obj.engineName || "PATCH", engine: e, engineIds: stable || ctx.engineIds === 64 ? 64 : undefined, engineName: obj.engineName, p, fm6: obj.fm6, fm4: obj.fm4,
       pattern: Array.isArray(obj.steps) ? patternFromSteps(obj.steps) : null, tags: ["file"] }, obj.engineName,
       ctx.keys && ctx.pe0 ? ctx.pe0 : p.length - 8);
     return pt ? { patches: [cleanPatch(pt)], skipped: 0, keys: null } : { patches: [], skipped: 1, keys: null };
@@ -1179,13 +1253,16 @@ function readLibraryFile(obj, ctx) {
   for (const x of obj.patches) {
     if (!x || !Array.isArray(x.params)) { skipped++; continue; }
     const nm = x.engineName || (obj.engines || [])[x.engine | 0];
-    const digital = nm === "DIGITAL" && noFm4;
-    const e = digital ? 1 : engIndex(x.engineName, x.engine | 0, obj.engines);
+    const patchStable = stable || x.engineIds === 64;
+    const digital = !patchStable && nm === "DIGITAL" && noFm4;
+    const e = digital ? 1 : engIndex(x.engineName, patchStable ? x.engine : x.engine | 0, obj.engines, patchStable);
     if (e < 0) { skipped++; continue; }
     const p = remapParams(x.params, fileKeys, ctx.keys, ctx.pe0);
     const pe0 = ctx.keys && ctx.pe0 ? ctx.pe0 : obj.pE0 ?? p.length - 8;
-    const pt = digital ? fromDigital({ ...x, engine: e, p }, ctx.engines, pe0)
-      : perc(cleanPatch({ ...x, engine: e, engineName: (ctx.engines || [])[e] || x.engineName || (obj.engines || [])[x.engine], p }), pe0);
+    const mapped = cleanPatch({ ...x, engine: e, engineIds: patchStable || ctx.engineIds === 64 ? 64 : undefined,
+      engineName: patchStable ? x.engineName || (obj.engines || [])[x.engine] || ""
+        : (ctx.engines || [])[e] || x.engineName || (obj.engines || [])[x.engine], p });
+    const pt = digital ? fromDigital(mapped, ctx.engines, pe0) || mapped : patchStable ? mapped : perc(mapped, pe0);
     if (!pt) { skipped++; continue; }
     out.push(cleanPatch(pt));
   }
@@ -1209,7 +1286,7 @@ const bank = {
   /* an FM6 sound's own patch comes with it (fm6: packed) where the firmware keeps one (INFO fm6.caps bit 1) */
   async get(rq, info, slot) {
     const u = parse[CMD.UP_GET](await rq(req.upGet(slot)), info);
-    if (u.used && presetPatches(info) && info.engines[u.engine] === "FM6") {
+    if (u.used && presetPatches(info) && fm6Engine(info, u.engine)) {
       const g = parse[CMD.FM6_GET](await rq(req.fm6Get(FM6.TARGET.USER, slot)));
       if (!g.rc) u.fm6 = g.packed;
     }
@@ -1217,8 +1294,9 @@ const bank = {
   },
   /* -> rc (0 ok); with info, an FM6 sound's patch (pt.fm6) goes with it */
   async put(rq, slot, pt, info) {
+    if (info && info.engineCatalog && !engineAvailable(info, pt.engine)) return 1;
     const rc = parse[CMD.UP_PUT](await rq(req.upPut(slot, pt), FLASH_OPT)).rc;
-    if (rc || !pt.fm6 || !presetPatches(info) || info.engines[pt.engine] !== "FM6") return rc;
+    if (rc || !pt.fm6 || !presetPatches(info) || !fm6Engine(info, pt.engine)) return rc;
     return parse[CMD.FM6_PUT](await rq(req.fm6Put(FM6.TARGET.USER, slot, pt.fm6), FLASH_OPT)).rc;
   },
   async store(rq, slot, name) { return parse[CMD.UP_STORE](await rq(req.upStore(slot, name), FLASH_OPT)).rc; },
@@ -1231,14 +1309,14 @@ async function capturePatch(rq, info, name) {
   const dump = parse[CMD.DUMP](await rq(req.dump()), info);
   const steps = [];
   for (let i = 0; i < UP.PAT && i < info.nstep; i++) steps.push(parse[CMD.STEP_GET](await rq(req.stepGet(i))));
-  const drum = info.engines[dump.engine] === "DRUM";   /* (a DRUM track that strikes a lane: its grid) */
+  const drum = drumEngine(info, dump.engine);   /* (a DRUM track that strikes a lane: its grid) */
   let fm6 = null;                                      /* an FM6 track: its own patch (the selected track's) */
-  if (info.fm6 && info.engines[dump.engine] === "FM6") {
+  if (info.fm6 && fm6Engine(info, dump.engine)) {
     const sel = info.ntrk ? parse[CMD.TRACK](await rq(req.track())).sel : 0;
     const g = parse[CMD.FM6_GET](await rq(req.fm6Get(FM6.TARGET.TRACK, sel)));
     if (!g.rc) fm6 = g.packed;
   }
-  return { patch: cleanPatch({ name, engine: dump.engine, engineName: info.engines[dump.engine], p: dump.p, pattern: patternFromSteps(steps),
+  return { patch: cleanPatch({ name, engine: dump.engine, engineIds: info.engineCatalog ? 64 : undefined, engineName: info.engines[dump.engine], p: dump.p, pattern: patternFromSteps(steps),
     grid: drum ? gridFromSteps(steps) : null, fm6 }), dump, steps };
 }
 
@@ -1256,6 +1334,7 @@ const trackOwn = (i, pe0) => TRACK_OWN.has(i) || (pe0 >= 83 && P_CHORD.includes(
    there = undo) and treats the SETs right after G_ENGSEL as part of this load (EDITOR_PROTOCOL.md "undo").
    opt: {gEng: G_ENGSEL id, progress(i, n)} */
 async function auditionPatch(rq, info, pt, opt = {}) {
+  if (!engineAvailable(info, pt.engine)) throw new Error("Unavailable engine");
   await rq(req.set(1, opt.gEng ?? 20, pt.engine));
   const dump = parse[CMD.DUMP](await rq(req.dump()), info);
   const n = Math.min(info.pcount, pt.p.length);
@@ -1710,7 +1789,7 @@ function makeMockDevice(opt = {}) {
       presets: [] },
     { name: "PHASE", titles: ["PHS", "LINE"], edit: [E("WAVE", ["SAW", "SQR", "PLS", "DSIN", "SPLS", "RSAW", "RTRI", "RTRP"], 0),
         E("WAVE2", ["-", "SAW", "SQR", "PLS", "DSIN", "SPLS", "RSAW", "RTRI", "RTRP"], 0), D("DCW", F.PCT, 0, 127, 60), D("ENV", F.PCT, 0, 127, 64),
-        D("DTN", F.INT, 0, 127, 0, null, "ct"), E("LINE", ["MIX", "RING"], 0), D("SUB", F.PCT, 0, 127, 0), NONE],
+        D("DTN", F.INT, 0, 127, 0, null, "ct"), E("LINE", ["MIX", "RING"], 0), D("SUB", F.PCT, 0, 127, 0), D("FOLD", F.PCT, 0, 127, 0)],
       presets: [P("BRASS", [0, 0, 30, 90, 0, 0, 0, 0], [8, 70, 90, 40], 0, 6), P("ORGAN", [3, 0, 40, 0, 0, 0, 0, 0], [0, 127, 127, 30], 0, 6),
         P("STRING", [0, 4, 50, 40, 12, 0, 0, 0], [40, 90, 100, 70], 0, 5), P("RESO", [5, 0, 60, 60, 0, 0, 0, 0], [0, 70, 30, 60], 0, 1),
         P("BELL", [6, 0, 80, 50, 0, 0, 0, 0], [0, 95, 0, 90], 0, 7), P("WIRE", [4, 7, 70, 40, 7, 0, 0, 0], [10, 80, 80, 60], 0, 4)] },
@@ -2385,8 +2464,9 @@ async function readDevicePreferences(rq, info, names, previous = null) {
     if (!previous || state.bankSig !== previous.state.bankSig) slots = await bank.list(rq);
     if (!previous || state.favoriteSig !== previous.state.favoriteSig || state.bankSig !== previous.state.bankSig) {
       favorites = [];
-      for (let engine = 0; engine <= info.nengines; engine++) {
-        const total = engine === info.nengines ? slots.total : (names[engine] || []).length;
+      const ids = engineOrder(info.engines).filter((e) => engineAvailable(info, e));
+     for (const engine of [...ids, userEngine(info)]) {
+       const total = engine === userEngine(info) ? slots.total : (names[engine] || []).length;
         const flags = favorites[engine] = [];
         for (let start = 0; start < total; start += 32) {
           const count = Math.min(32, total - start);
@@ -2435,10 +2515,10 @@ function engineOrder(names) {
 
 function devicePresetRows(info, names, preferences) {
   if (!preferences || !(preferences.state.caps & 8)) return [];
-  const rows = engineOrder(info.engines).filter((engine) => names[engine]).flatMap((engine) => names[engine]
+  const rows = engineOrder(info.engines).filter((engine) => engineAvailable(info, engine) && names[engine]).flatMap((engine) => names[engine]
     .map((name, preset) => ({ engine, preset, name, user: false })).filter((row) => aliasOf(names[engine], row.preset) === row.preset));
   for (const slot of preferences.slots.slots) if (slot.used)
-    rows.push({ engine: info.nengines, preset: slot.slot, name: slot.name, user: true });
+    rows.push({ engine: userEngine(info), preset: slot.slot, name: slot.name, user: true, storedEngine: slot.engine, unavailable: !engineAvailable(info, slot.engine) });
   return rows.map((row) => ({ ...row, favorite: !!(preferences.favorites[row.engine] || [])[row.preset] }))
     .filter((row) => !preferences.state.filter || row.favorite);
 }
@@ -2858,7 +2938,7 @@ const LAYOUT = (pe0) => [
 /* globals that are actions or placeholders on the device: buttons instead, or hidden */
 const G_SKIP = new Set(["SLOT", "NAME", "LOAD", "SAVE", "ENG", "SET", "CLRSQ", "INIT", "MIDI", "SYNC", "CPU", "CLK"]);
 const key = (s, id) => s + ":" + id;
-const engName = () => (dev && dev.info && dev.dump ? dev.info.engines[dev.dump.engine] : "");
+const engName = () => (dev && dev.info && dev.dump ? catalogLabel(dev.info, dev.dump.engine) : "");
 const gEng = () => { const i = dev.gdesc.findIndex((d) => d && d.label === "ENG"); return i >= 0 ? i : 20; };
 const pSlen = () => { const i = dev.pdesc.findIndex((d) => d && d.fmt === F.STEPS); return i >= 0 ? i : P.SLEN; };
 /* mixer ids by DESC label (core.h: P_PAN 39, P_MUTE 40) */
@@ -2970,7 +3050,9 @@ async function load(d) {
     for (let i = 0; i < d.info.pcount; i++) { sayK("reading", `${i + 1}/${total}`); d.pdesc[i] = await getDescOrNull(0, i, d); }
     for (let i = 0; i < d.info.gcount; i++) { sayK("reading", `${d.info.pcount + i + 1}/${total}`); d.gdesc[i] = await getDescOrNull(1, i, d); }
     d.titles = [];
+    d.names = [];
     for (let e = 0; e < d.info.nengines; e++) {
+      if (!engineAvailable(d.info, e)) { d.names[e] = []; d.titles[e] = ["-", "-"]; continue; }
       const r = parse[CMD.NAMES](await sessionRequest(d, req.names(e)));
       d.names[e] = r.names;
       d.titles[e] = r.titles;
@@ -3034,7 +3116,7 @@ async function loadSteps(d = dev) {
 function buildUI() {
   const sel = $("engine");
   /* (engine 1, "-": DIGITAL retired, reserved: never offered) */
-  sel.replaceChildren(...engineOrder(dev.info.engines).map((i) => el("option", { value: i, text: dev.info.engines[i] })));   /* (shown order) */
+  sel.replaceChildren(...engineOrder(dev.info.engines).filter((i) => engineAvailable(dev.info, i)).map((i) => el("option", { value: i, text: dev.info.engines[i] })));   /* (shown order) */
   dev.mix = null;
   buildGroups();
   updateBrowser();
@@ -3081,12 +3163,17 @@ function renderSysinfo() {
 }
 
 function updateBrowser() {
+  const missing = !engineAvailable(dev.info, dev.dump.engine);
+  for (const o of $("engine").querySelectorAll("option[data-unavailable]")) o.remove();
+  if (missing) $("engine").append(el("option", { value: dev.dump.engine, text: catalogLabel(dev.info, dev.dump.engine), disabled: true, "data-unavailable": "1" }));
+  $("init").disabled = missing;
   const e = dev.dump.engine;
   const sel = $("engine");
   renderTrackbar();
   if (document.activeElement !== sel) sel.value = String(e);
   const ps = $("preset");
   const names = dev.names[e] || [];
+  ps.disabled = !names.length;
   if (ps.dataset.engine !== String(e)) {
     ps.replaceChildren(...names.map((n, i) => el("option", { value: i, text: n, hidden: aliasOf(names, i) !== i })));
     ps.dataset.engine = String(e);
@@ -3147,6 +3234,7 @@ function buildGroups() {
 
 function paramRow(s, id) {
   const d = s ? dev.gdesc[id] : dev.pdesc[id];
+  if (!s && id >= dev.info.pe0 && !engineAvailable(dev.info, dev.dump.engine)) return null;
   if (!visible(d) || (s === 1 && G_SKIP.has(d.label))) return null;
   const k = key(s, id);
   let input;
@@ -3218,7 +3306,7 @@ window.addEventListener("pointercancel", () => { dragging = null; });
 /* SET as fast as the device answers: one SET per control in flight and at most one queued, which
    always carries the latest value (Link coalesces by key), so a drag never builds a backlog */
 function userSet(s, id, v, final) {
-  if (!dev) return;
+  if (!dev || (!s && id >= dev.info.pe0 && !engineAvailable(dev.info, dev.dump.engine)) || (s && id === gEng() && !engineAvailable(dev.info, v))) return;
   const k = key(s, id);
   (s ? dev.dump.g : dev.dump.p)[id] = v;
   showValue(k, v, false);
@@ -3248,7 +3336,7 @@ async function sendSet(s, id, k) {
 $("engine").addEventListener("change", () => choosePreset(+$("engine").value, 0));
 $("preset").addEventListener("change", () => { if (dev) choosePreset(dev.dump.engine, +$("preset").value); });
 async function choosePreset(e, p) {
-  if (!dev) return;
+  if (!dev || !engineAvailable(dev.info, e)) return;
   const releaseBusy = beginBusy();
   try {
     selfLoad(true);
@@ -3268,7 +3356,7 @@ async function afterSoundChange(msg = "ready", d = dev) {
   sayK(msg);
 }
 $("init").addEventListener("click", async () => {
-  if (!dev || !confirm(t("confirmInit"))) return;
+  if (!dev || !engineAvailable(dev.info, dev.dump.engine) || !confirm(t("confirmInit"))) return;
   const releaseBusy = beginBusy();
   try { selfLoad(true); await rq(req.set(1, gEng(), dev.dump.engine)); await afterSoundChange(); }
   catch (err) { report(err); } finally { releaseBusy(); }
@@ -3365,12 +3453,12 @@ const backupProgress = (done, total) => sayK("backupWorking", `${Math.round(done
 $("backup-export").addEventListener("click", () => op(async () => {
   const d = dev;
   if (!(d?.info?.backupCaps & 1)) return;
-  const { captureBackup } = await backupModule();
+  const { captureBackup, settingsFormat, PER6_WARNING } = await backupModule();
   assertSession(d);
-  const file = await captureBackup((r, o) => sessionRequest(d, r, o), d.info.version, backupProgress);
+  const file = await captureBackup((r, o) => sessionRequest(d, r, o), d.info.version, backupProgress, { info: d.info });
   assertSession(d);
   download(`Felucca-backup-${new Date().toISOString().slice(0, 10)}.json`, file);
-  sayK("backupDone");
+  if (settingsFormat(file) === "PER6") sayK("error", PER6_WARNING); else sayK("backupDone");
 }));
 $("backup-import").addEventListener("click", () => { if (dev?.info?.backupCaps & 2) $("backup-file").click(); });
 $("backup-file").addEventListener("change", () => {
@@ -3378,10 +3466,11 @@ $("backup-file").addEventListener("change", () => {
   if (!file || !(d?.info?.backupCaps & 2)) return;
   op(async () => {
     if (file.size > 600000) throw new Error("Backup file too large");
-    const { readBackup, restoreBackup } = await backupModule();
+    const { readBackup, restoreBackup, assertBackupCompatible } = await backupModule();
     const archive = readBackup(await file.text()); assertSession(d);
+    assertBackupCompatible(archive, d.info);
     if (!confirm(t("backupConfirm"))) return;
-    await restoreBackup((r, o) => sessionRequest(d, r, o), archive, backupProgress);
+    await restoreBackup((r, o) => sessionRequest(d, r, o), archive, backupProgress, { info: d.info });
     await load(d); sayK("backupRestored");
   });
 });
@@ -4036,7 +4125,7 @@ const mixTouched = (kind, i) => mixDrag === `${kind}:${i}` || performance.now() 
   || (!!dev && kind === "lv" && dev.link.hasQueued("mix:" + i))
   || (kind === "pan" && (panWant.has(i) || (!!dev && dev.link.hasQueued("pan:" + i))));
 function trackName(x) {
-  return [dev.info.engines[x.engine], (dev.names[x.engine] || [])[x.preset]].filter(Boolean).join(" ");
+  return [catalogLabel(dev.info, x.engine), (dev.names[x.engine] || [])[x.preset]].filter(Boolean).join(" ");
 }
 
 async function readMixer(d = dev) {
@@ -4417,7 +4506,7 @@ function renderPreferences(force = false) {
     const name = row.user ? slotName(row.preset) + " " + row.name : row.name;
     const star = el("button", { text: row.favorite ? "\u2605" : "\u2606", "aria-label": t(row.favorite ? "deviceUnstar" : "deviceStar") + ": " + name, "aria-pressed": String(row.favorite) });
     star.addEventListener("click", () => changeFavorite(row));
-    const load = el("button", { text: name });
+    const load = el("button", { text: name + (row.unavailable ? ` · N/A (${row.storedEngine})` : ""), disabled: row.unavailable });
     load.addEventListener("click", () => { if (!dev || busy) return; row.user ? bankLoad(row.preset) : choosePreset(row.engine, row.preset); });
     table.append(el("tr", {}, el("td", {}, star), el("td", {}, load), el("td", { text: row.user ? t("bank") : d.info.engines[row.engine] })));
   }
@@ -4435,7 +4524,7 @@ $("savefile").addEventListener("click", () => {
   if (!dev) return;
   const engine = dev.dump.engine, preset = dev.dump.preset;
   const data = { format: "felucca-patch", version: 1, firmware: dev.info.version,
-    engineName: dev.info.engines[engine], presetName: (dev.names[engine] || [])[preset],
+    engineIds: dev.info.engineCatalog ? 64 : undefined, engineName: dev.info.engines[engine], presetName: (dev.names[engine] || [])[preset],
     engine, preset, p: dev.dump.p.slice(), g: dev.dump.g.slice(),
     steps: dev.steps.map((s) => ({ n: s.n, notes: s.notes.slice(), time: s.time, flags: s.flags, vel: s.vel })) };
   download(`felucca-${fileSlug(data.engineName || "patch")}-${fileSlug(data.presetName || preset)}.json`, data);
@@ -4450,7 +4539,7 @@ $("file").addEventListener("change", async () => {
     data = JSON.parse(await f.text());
     assertSession(session);
     if (!Number.isInteger(data.engine) || !Number.isInteger(data.preset) || !Array.isArray(data.p)) throw new Error("engine / preset / p");
-    if (data.engine < 0 || data.engine >= dev.info.nengines) throw new Error("engine " + data.engine);
+    if (!engineAvailable(dev.info, data.engine)) throw new Error("engine " + data.engine);
   } catch (e) { if (e.message !== "closed") sayK("badfile", e.message); return; }
   const releaseBusy = beginBusy();
   try {
@@ -4526,8 +4615,8 @@ let libBusy = false;           /* a library / bank operation is running */
 const newId = () => (self.crypto && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
 const nowIso = () => new Date().toISOString();
 const slotName = (i) => "U" + String(i + 1).padStart(2, "0");
-const libCtx = () => (dev && dev.keys ? { keys: dev.keys, engines: dev.info.engines, firmware: dev.info.version, pe0: dev.info.pe0 }
-  : { keys: libMeta.keys, engines: libMeta.engines, firmware: "", pe0: libMeta.pe0 });
+const libCtx = () => (dev && dev.keys ? { keys: dev.keys, engines: dev.info.engines, firmware: dev.info.version, pe0: dev.info.pe0, engineIds: dev.info.engineCatalog ? 64 : undefined }
+  : { keys: libMeta.keys, engines: libMeta.engines, firmware: "", pe0: libMeta.pe0, engineIds: libMeta.engineIds });
 
 async function libInit() {
   try {
@@ -4562,28 +4651,44 @@ async function libUpdate(p) {
 async function libAdopt(d) {
   const keys = d.keys, engines = d.info.engines, changed = [];
   const relayout = (libMeta.keys && !sameKeys(libMeta.keys, keys)) || (libMeta.engines && !sameKeys(libMeta.engines, engines));
-  const noFm4 = (engines || [])[1] === "-";
+  const stable = lib.length > 0 && lib.every((p) => p.engineIds === 64);
+  const targetStable = !!d.info.engineCatalog || stable;
+  const historical = !stable;
+  const noFm4 = historical && (engines || [])[1] === "-";
+  // Resolve every historical name before changing or persisting any patches. A missing name
+  // has no trustworthy stable ID; retain the original library until a compatible layout is available.
   for (const p of lib) {
     const name = p.engineName || (libMeta.engines || [])[p.engine];
-    const digital = noFm4 && !p.fm6 && (name === "DIGITAL" || ((!name || name === "-") && p.engine === 1));
+    if (!stable && p.engineIds !== 64 && (!name || name === "-" || !engines.includes(name)) &&
+        !(noFm4 && name === "DIGITAL" && engines.includes("FM6")))
+      throw new Error(`Cannot migrate unavailable historical engine ${name}; reconnect firmware that includes it`);
+  }
+  for (const p of lib) {
+    const name = p.engineName || (libMeta.engines || [])[p.engine];
+    const digital = noFm4 && p.engineIds !== 64 && !p.fm6 && (name === "DIGITAL" || ((!name || name === "-") && p.engine === 1));
     const pe0 = () => (keys && p.p.length === keys.length ? d.info.pe0 : p.p.length - 8);   /* (E1..E8: the last 8) */
-    const perc = !digital && !!fromPerc({ ...p, engineName: name }, engines, p.p.length - 8);
-    if (!relayout && !digital && !perc) continue;
+    const perc = historical && p.engineIds !== 64 && !digital && !!fromPerc({ ...p, engineName: name }, engines, p.p.length - 8);
+    if (!relayout && !digital && !perc && (!targetStable || p.engineIds === 64)) continue;
     if (relayout) p.p = remapParams(p.p, libMeta.keys, keys);
     const pt = digital ? fromDigital(p, engines, pe0()) : perc ? fromPerc({ ...p, engineName: name }, engines, pe0()) : null;
     if (pt) Object.assign(p, cleanPatch(pt));
     else {
-      const e = name ? engines.indexOf(name) : p.engine;
-      if (e >= 0) { p.engine = e; p.engineName = engines[e]; }
+      const sourceStable = stable || p.engineIds === 64;
+      const e = sourceStable ? p.engine : name ? engines.indexOf(name) : p.engine;
+      if (e >= 0) { p.engine = e; if (!sourceStable) p.engineName = engines[e]; }
+    }
+    if (targetStable) {
+      p.engineIds = 64;
+      if ((!p.engineName || p.engineName === "-") && engines[p.engine] && engines[p.engine] !== "-") p.engineName = engines[p.engine];
     }
     changed.push(p);
   }
-  libMeta = { keys, engines, pe0: d.info.pe0 };
+  libMeta = { keys, engines, pe0: d.info.pe0, engineIds: targetStable ? 64 : undefined };
   if (changed.length) await libWrite(changed);
   try { await store.setMeta("layout", libMeta); } catch (e) { console.warn(e); }
   renderLib();
 }
-const engineOk = (p) => !!dev && p.engine < dev.info.nengines && (!p.engineName || dev.info.engines[p.engine] === p.engineName);
+const engineOk = (p) => !!dev && engineAvailable(dev.info, p.engine) && (!!dev.info.engineCatalog || (p.engineIds !== 64 && !p.engineName) || dev.info.engines[p.engine] === p.engineName);
 /* a full parameter set for UP_PUT: unknown values get the DESC default where it is known, else 0 */
 function fullParams(p) {
   const out = [];
@@ -4633,7 +4738,7 @@ function renderLib() {
     for (const p of v) {
       const tr = el("tr", { "data-id": p.id, class: p.id === libSel ? "sel" : null, draggable: "true", title: p.name },
         el("td", {}, p.pattern || p.grid ? icon("note_eight") : "", p.name),
-        el("td", { text: p.engineName || String(p.engine) }),
+        el("td", { text: dev && !engineOk(p) ? `${p.engineName || ""} · N/A (${p.engine})` : dev && (dev.info.engineCatalog || p.engineIds === 64) ? catalogLabel(dev.info, p.engine) : p.engineName || String(p.engine) }),
         el("td", { text: p.tags.join(", ") }),
         el("td", { text: new Date(p.modified).toLocaleDateString(lang) }));
       tr.addEventListener("click", () => { libSel = p.id; renderLib(); });
@@ -4667,7 +4772,7 @@ function renderBank() {
     const tr = el("tr", { "data-slot": x.slot, class: [x.slot === bankSel ? "sel" : "", x.used ? "" : "empty"].join(" ").trim() || null,
       draggable: x.used ? "true" : null },
       el("td", { text: slotName(x.slot) }), el("td", { text: x.used ? x.name : t("empty") }),
-      el("td", { text: x.used ? engineLabel(dev.info.engines, x.engine) : "" }));
+      el("td", { text: x.used ? catalogLabel(dev.info, x.engine) : "" }));
     tr.addEventListener("click", () => { bankSel = x.slot; renderBank(); renderLib(); });
     tr.addEventListener("dblclick", () => { if (x.used) bankLoad(x.slot); });
     tr.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/x-felucca-slot", String(x.slot)); e.dataTransfer.effectAllowed = "copy"; });
@@ -4684,7 +4789,7 @@ function renderBank() {
   $("banklist").replaceChildren(tb);
   const s = bankSel == null ? null : b.slots[bankSel];
   const idle = !libBusy;
-  $("bkload").disabled = !s || !s.used || !idle;
+  $("bkload").disabled = !s || !s.used || !engineAvailable(dev.info, s.engine) || !idle;
   $("bkstore").disabled = !s || !idle;
   $("bkget").disabled = !s || !s.used || !idle;
   $("bkerase").disabled = !s || !s.used || !idle;
@@ -4826,7 +4931,7 @@ $("libfile").addEventListener("change", async () => {
       const ctx = libCtx();
       const r = readLibraryFile(obj, ctx);
       if (!ctx.keys && r.keys) {                     /* no layout yet: the file's becomes the library's */
-        libMeta = { keys: r.keys, engines: Array.isArray(obj.engines) ? obj.engines : null, pe0: obj.pE0 ?? null };
+        libMeta = { keys: r.keys, engines: Array.isArray(obj.engines) ? obj.engines : null, pe0: obj.pE0 ?? null, engineIds: obj.engineIds };
         try { await store.setMeta("layout", libMeta); } catch (e) { console.warn(e); }
       }
       if (obj.kind === "bank") r.patches.forEach((p) => { if (!p.tags.includes("bank")) p.tags.push("bank"); });
@@ -4842,6 +4947,7 @@ $("libfile").addEventListener("change", async () => {
 function bankLoad(slot) {
   if (!dev || !dev.bank || slot == null || libBusy) return;
   const s = dev.bank.slots[slot];
+  if (s && s.used && !engineAvailable(dev.info, s.engine)) return;
   libOp(async (d, rqf) => {
     selfLoad();
     const rc = await bank.load(rqf, slot);
@@ -4853,7 +4959,7 @@ function bankLoad(slot) {
 $("bkload").addEventListener("click", () => bankLoad(bankSel));
 $("bkstore").addEventListener("click", () => {
   const slot = bankSel;
-  if (!dev || !dev.bank || slot == null) return;
+  if (!dev || !dev.bank || slot == null || !engineAvailable(dev.info, dev.dump.engine)) return;
   const s = dev.bank.slots[slot];
   const name = prompt(t("promptNameAuto"), s.used ? s.name : "");
   if (name == null) return;
@@ -4869,9 +4975,9 @@ function bankGet(slot) {
   libOp(async (d, rqf) => {
     const u = await bank.get(rqf, dev.info, slot);
     if (!u.used) { sayK("emptySlot", slotName(slot)); return; }
-    const pt = { name: u.name, engine: u.engine, engineName: dev.info.engines[u.engine], p: u.p, pattern: u.pattern, grid: u.grid, tags: ["device"],
+    const pt = { name: u.name, engine: u.engine, engineIds: dev.info.engineCatalog ? 64 : undefined, engineName: dev.info.engines[u.engine], p: u.p, pattern: u.pattern, grid: u.grid, tags: ["device"],
       fm6: u.fm6 };
-    await libAdd([reservedFm4(dev.info.engines, u.engine) ? fromDigital(pt, dev.info.engines, dev.info.pe0) : pt]);
+    await libAdd([!dev.info.engineCatalog && reservedFm4(dev.info.engines, u.engine) ? fromDigital(pt, dev.info.engines, dev.info.pe0) : pt]);
     sayK("copiedLib", u.name);
   });
 }
@@ -4898,7 +5004,7 @@ $("bkexport").addEventListener("click", () => libOp(async (d, rqf) => {
     if (!x.used) continue;
     sayK("readingBank", ` ${slotName(x.slot)}`);
     const u = await bank.get(rqf, dev.info, x.slot);
-    if (u.used) out.push({ name: u.name, engine: u.engine, p: u.p, pattern: u.pattern, grid: u.grid, slot: x.slot, fm6: u.fm6,
+    if (u.used) out.push({ name: u.name, engine: u.engine, engineIds: dev.info.engineCatalog ? 64 : undefined, p: u.p, pattern: u.pattern, grid: u.grid, slot: x.slot, fm6: u.fm6,
       engineName: reservedFm4(dev.info.engines, u.engine) ? "DIGITAL" : dev.info.engines[u.engine] });   /* (DIGITAL's values) */
   }
   download(`felucca-bank-${today()}.json`, libraryFile("bank", out, libCtx()));

@@ -79,8 +79,8 @@ export class Library {
   async write(ps) { if (this.persistent) await this.store.putMany(ps); }
   /* the layout of the device (or the library's own) the values are read in */
   ctx(dev) {
-    return dev && dev.keys ? { keys: dev.keys, engines: dev.info.engines, firmware: dev.info.version, pe0: dev.info.pe0 }
-      : { keys: this.meta.keys, engines: this.meta.engines, firmware: "", pe0: this.meta.pe0 };
+    return dev && dev.keys ? { keys: dev.keys, engines: dev.info.engines, firmware: dev.info.version, pe0: dev.info.pe0, engineIds: dev.info.engineCatalog ? 64 : undefined }
+      : { keys: this.meta.keys, engines: this.meta.engines, firmware: "", pe0: this.meta.pe0, engineIds: this.meta.engineIds };
   }
   get(id) { return this.patches.find((p) => p.id === id) || null; }
   async add(list) {
@@ -108,23 +108,39 @@ export class Library {
   async adopt(dev) {
     const keys = dev.keys, engines = dev.info.engines, changed = [];
     const relayout = (this.meta.keys && !sameKeys(this.meta.keys, keys)) || (this.meta.engines && !sameKeys(this.meta.engines, engines));
-    const noFm4 = (engines || [])[1] === "-";
+    const stable = this.patches.length > 0 && this.patches.every((p) => p.engineIds === 64);
+    const targetStable = !!dev.info.engineCatalog || stable;
+    const historical = !stable;
+    const noFm4 = historical && (engines || [])[1] === "-";
+    // Resolve every historical name before changing or persisting any patches. A missing name
+    // has no trustworthy stable ID; retain the original library until a compatible layout is available.
     for (const p of this.patches) {
       const name = p.engineName || (this.meta.engines || [])[p.engine];
-      const digital = noFm4 && !p.fm6 && (name === "DIGITAL" || ((!name || name === "-") && p.engine === 1));
+      if (!stable && p.engineIds !== 64 && (!name || name === "-" || !engines.includes(name)) &&
+          !(noFm4 && name === "DIGITAL" && engines.includes("FM6")))
+        throw new Error(`Cannot migrate unavailable historical engine ${name}; reconnect firmware that includes it`);
+    }
+    for (const p of this.patches) {
+      const name = p.engineName || (this.meta.engines || [])[p.engine];
+      const digital = noFm4 && p.engineIds !== 64 && !p.fm6 && (name === "DIGITAL" || ((!name || name === "-") && p.engine === 1));
       const pe0 = () => (keys && p.p.length === keys.length ? dev.info.pe0 : p.p.length - 8);   /* (E1..E8: the last 8) */
-      const perc = !digital && !!fromPerc({ ...p, engineName: name }, engines, p.p.length - 8);
-      if (!relayout && !digital && !perc) continue;
+      const perc = historical && p.engineIds !== 64 && !digital && !!fromPerc({ ...p, engineName: name }, engines, p.p.length - 8);
+      if (!relayout && !digital && !perc && (!targetStable || p.engineIds === 64)) continue;
       if (relayout) p.p = remapParams(p.p, this.meta.keys, keys);
       const pt = digital ? fromDigital(p, engines, pe0()) : perc ? fromPerc({ ...p, engineName: name }, engines, pe0()) : null;
       if (pt) Object.assign(p, cleanPatch(pt));
       else {
-        const e = name ? engines.indexOf(name) : p.engine;
-        if (e >= 0) { p.engine = e; p.engineName = engines[e]; }
+        const sourceStable = stable || p.engineIds === 64;
+        const e = sourceStable ? p.engine : name ? engines.indexOf(name) : p.engine;
+        if (e >= 0) { p.engine = e; if (!sourceStable) p.engineName = engines[e]; }
+      }
+      if (targetStable) {
+        p.engineIds = 64;
+        if ((!p.engineName || p.engineName === "-") && engines[p.engine] && engines[p.engine] !== "-") p.engineName = engines[p.engine];
       }
       changed.push(p);
     }
-    this.meta = { keys, engines, pe0: dev.info.pe0 };
+    this.meta = { keys, engines, pe0: dev.info.pe0, engineIds: targetStable ? 64 : undefined };
     if (changed.length) await this.write(changed);
     try { if (this.persistent) await this.store.setMeta("layout", this.meta); } catch (e) { console.warn(e); }
     this.changed();
@@ -154,7 +170,7 @@ export class Library {
         const ctx = this.ctx(dev);
         const r = readLibraryFile(obj, ctx);
         if (!ctx.keys && r.keys) {                   /* no layout yet: the file's becomes the library's */
-          this.meta = { keys: r.keys, engines: Array.isArray(obj.engines) ? obj.engines : null, pe0: obj.pE0 ?? null };
+          this.meta = { keys: r.keys, engines: Array.isArray(obj.engines) ? obj.engines : null, pe0: obj.pE0 ?? null, engineIds: obj.engineIds };
           try { if (this.persistent) await this.store.setMeta("layout", this.meta); } catch (e) { console.warn(e); }
         }
         if (obj.kind === "bank") r.patches.forEach((p) => { if (!p.tags.includes("bank")) p.tags.push("bank"); });

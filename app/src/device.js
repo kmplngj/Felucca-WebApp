@@ -6,8 +6,8 @@
 // and the edits. No DOM: the page listens (on) and calls; the tests drive it against the mock device.
 // The behaviour is editor.html's (connect, load, onPush, keepAlive, the 400 ms poll, selfLoad), moved here.
 
-import { captureBackup, captureObject, conditionalProjects, projectFile, putObject, readBackup, readProject, restoreBackup } from "../../fm1backup.js";
-import { CMD, F, FLASH_OPT, FM6, fm6Bank, midiLearn, Link, parseMotionAll, P_CHORD, SMP, auditionPatch, bank, capturePatch, fromDigital, mixer, parse, paramKeys, readDeviceMenu, readDevicePreferences, req, reservedFm4, startWatch, upName } from "./proto.js";
+import { captureBackup, captureObject, conditionalProjects, projectFile, putObject, readBackup, readProject, restoreBackup, assertBackupCompatible } from "../../fm1backup.js";
+import { CMD, F, FLASH_OPT, engineAvailable, catalogLabel, FM6, fm6Bank, midiLearn, Link, parseMotionAll, P_CHORD, SMP, auditionPatch, bank, capturePatch, fromDigital, mixer, parse, paramKeys, readDeviceMenu, readDevicePreferences, req, reservedFm4, startWatch, upName } from "./proto.js";
 
 export const isFelucca = (p) => /felucca/i.test(p.name || "") && p.state !== "disconnected";
 export const P = { LEVEL: 0, SLEN: 29 };
@@ -103,7 +103,9 @@ export class Device {
       this.emit("progress", { what: "info", info: i });
       for (let k = 0; k < i.pcount; k++) { this.emit("progress", { what: "desc", n: k + 1, total }); this.pdesc[k] = await this.descOrNull(0, k); }
       for (let k = 0; k < i.gcount; k++) { this.emit("progress", { what: "desc", n: i.pcount + k + 1, total }); this.gdesc[k] = await this.descOrNull(1, k); }
+      this.names = []; this.titles = [];
       for (let e = 0; e < i.nengines; e++) {
+        if (!engineAvailable(i, e)) { this.names[e] = []; this.titles[e] = ["-", "-"]; continue; }
         const r = parse[CMD.NAMES](await this.rq(req.names(e)));
         this.names[e] = r.names; this.titles[e] = r.titles;
       }
@@ -201,13 +203,15 @@ export class Device {
   muteId() { return this.pId("MUTE", 40); }
   revId() { return this.pId("REV", 36); }
   pSlen() { const k = this.pdesc.findIndex((d) => d && d.fmt === F.STEPS); return k >= 0 ? k : P.SLEN; }
-  engineName() { return this.info && this.dump ? this.info.engines[this.dump.engine] : ""; }
+  engineName() { return this.info && this.dump ? catalogLabel(this.info, this.dump.engine) : ""; }
 
   touched(k) { return this.now() - (this.touchedAt.get(k) || 0) < 600 || (this.link && this.link.hasQueued(k)); }
 
   /* ---- edits ---- */
   /* a parameter of the selected track (scope 0) or a global (1): coalesced (the latest value wins), one in flight */
   async setParam(scope, id, value) {
+    if (scope && id === this.gId("ENG", 20) && !engineAvailable(this.info, value)) return undefined;
+    if (!scope && id >= this.info.pe0 && !engineAvailable(this.info, this.dump.engine)) return undefined;
     const k = scope + ":" + id;
     this.touchedAt.set(k, this.now());
     (scope ? this.dump.g : this.dump.p)[id] = value;
@@ -247,6 +251,7 @@ export class Device {
   }
   /* a factory preset (engine e, preset p) on the selected track */
   loadPreset(e, p) {
+    if (!engineAvailable(this.info, e)) return Promise.resolve(false);
     return this.op(async () => {
       this.selfLoad(true);
       parse[CMD.PRESET](await this.rq(req.preset(e, p)));
@@ -255,6 +260,7 @@ export class Device {
   }
   /* the engine's plain sound (SET of G_ENGSEL to the engine it has) */
   initSound() {
+    if (!engineAvailable(this.info, this.dump.engine)) return Promise.resolve(false);
     return this.op(async () => {
       this.selfLoad(true);
       await this.rq(req.set(1, this.gId("ENG", 20), this.dump.engine));
@@ -319,8 +325,8 @@ export class Device {
   }
 
   /* ---- sounds: the user bank (UP_*), audition, capture, favourites (editor.html's library half) ---- */
-  /* a sound the device can take: its engine is this device's (by number and name) */
-  engineOk(p) { return p.engine < this.info.nengines && (!p.engineName || this.info.engines[p.engine] === p.engineName); }
+  /* The catalog makes the id authoritative; legacy layouts also compare names. */
+  engineOk(p) { return engineAvailable(this.info, p.engine) && (!!this.info.engineCatalog || (p.engineIds !== 64 && !p.engineName) || this.info.engines[p.engine] === p.engineName); }
   /* a full parameter set for UP_PUT: unknown values get the DESC default where it is known, else 0 */
   fullParams(p) {
     const out = [];
@@ -340,6 +346,8 @@ export class Device {
   bankRefresh() { return this.op(async () => { this.bank = await bank.list((r, o) => this.rq(r, o)); this.emit("bank", this.bank); this.emit("storage", this.storage()); }); }
   /* -> true when loaded (false: an empty slot) */
   bankLoad(slot) {
+    const x = this.bank && this.bank.slots[slot];
+    if (x && x.used && !engineAvailable(this.info, x.engine)) return Promise.resolve(false);
     return this.op(async () => {
       this.selfLoad();
       if (await bank.load((r, o) => this.rq(r, o), slot)) return false;
@@ -349,6 +357,7 @@ export class Device {
   }
   /* the sound now playing into slot (name "": the device names it) */
   bankStore(slot, name) {
+    if (!engineAvailable(this.info, this.dump.engine)) return Promise.resolve(false);
     return this.op(async () => { this.flashRc(await bank.store((r, o) => this.rq(r, o), slot, name)); await this.refreshSlot(slot); this.emit("storage", this.storage()); return true; });
   }
   bankErase(slot) {
@@ -358,9 +367,9 @@ export class Device {
   async readSlot(slot) {
     const u = await bank.get((r, o) => this.rq(r, o), this.info, slot);
     if (!u.used) return null;
-    const pt = { name: u.name, engine: u.engine, engineName: this.info.engines[u.engine], p: u.p, pattern: u.pattern, grid: u.grid, tags: ["device"],
+    const pt = { name: u.name, engine: u.engine, engineIds: this.info.engineCatalog ? 64 : undefined, engineName: this.info.engines[u.engine], p: u.p, pattern: u.pattern, grid: u.grid, tags: ["device"],
       fm6: u.fm6, ...(u.category ? { category: u.category } : {}) };   /* (an FM6 sound's own patch, 1.0.3; the category, 1.4) */
-    return reservedFm4(this.info.engines, u.engine) ? fromDigital(pt, this.info.engines, this.info.pe0) : pt;
+    return !this.info.engineCatalog && reservedFm4(this.info.engines, u.engine) ? fromDigital(pt, this.info.engines, this.info.pe0) : pt;
   }
   bankGet(slot) { return this.op(() => this.readSlot(slot)); }
   /* every used slot, for a bank file (DIGITAL's own values for a reserved slot) */
@@ -371,7 +380,7 @@ export class Device {
         if (!x.used) continue;
         this.emit("progress", { what: "bank", n: x.slot + 1, total: this.bank.total });
         const u = await bank.get((r, o) => this.rq(r, o), this.info, x.slot);
-        if (u.used) out.push({ name: u.name, engine: u.engine, p: u.p, pattern: u.pattern, grid: u.grid, slot: x.slot, fm6: u.fm6,
+        if (u.used) out.push({ name: u.name, engine: u.engine, engineIds: this.info.engineCatalog ? 64 : undefined, p: u.p, pattern: u.pattern, grid: u.grid, slot: x.slot, fm6: u.fm6,
           ...(u.category ? { category: u.category } : {}),
           engineName: reservedFm4(this.info.engines, u.engine) ? "DIGITAL" : this.info.engines[u.engine] });
       }
@@ -382,7 +391,7 @@ export class Device {
   bankCategory(slot, cat) {
     return this.op(async () => {
       const u = await bank.get((r, o) => this.rq(r, o), this.info, slot);
-      if (!u.used) return false;
+      if (!u.used || !engineAvailable(this.info, u.engine)) return false;
       this.flashRc(await bank.put((r, o) => this.rq(r, o), slot, { ...u, category: cat }, this.info));
       await this.refreshSlot(slot);
       return true;
@@ -415,6 +424,7 @@ export class Device {
   capture(name) { return this.op(async () => (await capturePatch((r, o) => this.rq(r, o), this.info, name)).patch); }
   /* a factory preset -> a library patch (the sound only: the steps are the track's), the preset left loaded */
   captureFactory(e, k) {
+    if (!engineAvailable(this.info, e)) return Promise.resolve(false);
     return this.op(async () => {
       this.selfLoad(true);
       await this.rq(req.preset(e, k));
@@ -472,10 +482,10 @@ export class Device {
   /* -> the backup file (felucca-backup v1: the music, settings, projects, user banks, the FM6 bank of 1.0..1.0.2 or (1.0.3)
      the user presets' FM6 patches, the sample slots) */
   backupSave(onProgress) {
-    return this.op(() => captureBackup((r, o) => this.rq(r, o), this.info.version, onProgress));
+    return this.op(() => captureBackup((r, o) => this.rq(r, o), this.info.version, onProgress, { info: this.info }));
   }
   /* a backup file (text) checked whole before the first write; then written, the music last, and everything read again */
-  backupCheck(text) { return readBackup(text); }
+  backupCheck(text) { const a = readBackup(text); assertBackupCompatible(a, this.info); return a; }
   /* a backup this device cannot take back: a 1.4 project (3840 bytes, FUN10) on firmware before it (no INFO 41 01:
      it would answer rc 1 and keep nothing of that object) */
   /* (and a 1.5 project, FUN10 of 111 parameters, byte 66, on 1.2 .. 1.4: more parameters than this device has) */
@@ -508,9 +518,10 @@ export class Device {
   backupConditional(archive) { return this.info.cond ? [] : conditionalProjects(archive); }
   /* skip: object ids left out (they stay as they are on the device) */
   backupRestore(archive, onProgress, skip = []) {
+    try { assertBackupCompatible(archive, this.info); } catch (e) { this.emit("error", e); return Promise.resolve(false); }
     if (this.backupTooNew(archive)) { this.emit("error", new Error("backupNewer")); return Promise.resolve(false); }
     return this.op(async () => {
-      await restoreBackup((r, o) => this.rq(r, o), archive, onProgress, { skip });
+      await restoreBackup((r, o) => this.rq(r, o), archive, onProgress, { skip, info: this.info });
       await this.load();
       this.emit("reload", this);
       return true;
