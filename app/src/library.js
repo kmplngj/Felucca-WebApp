@@ -79,7 +79,7 @@ export class Library {
   async write(ps) { if (this.persistent) await this.store.putMany(ps); }
   /* the layout of the device (or the library's own) the values are read in */
   ctx(dev) {
-    return dev && dev.keys ? { keys: dev.keys, engines: dev.info.engines, firmware: dev.info.version, pe0: dev.info.pe0, engineIds: dev.info.engineCatalog ? 64 : this.meta.engineIds }
+    return dev && dev.keys ? { keys: dev.keys, engines: dev.info.engines, firmware: dev.info.version, pe0: dev.info.pe0, engineIds: dev.info.engineCatalog ? 64 : undefined }
       : { keys: this.meta.keys, engines: this.meta.engines, firmware: "", pe0: this.meta.pe0, engineIds: this.meta.engineIds };
   }
   get(id) { return this.patches.find((p) => p.id === id) || null; }
@@ -108,7 +108,7 @@ export class Library {
   async adopt(dev) {
     const keys = dev.keys, engines = dev.info.engines, changed = [];
     const relayout = (this.meta.keys && !sameKeys(this.meta.keys, keys)) || (this.meta.engines && !sameKeys(this.meta.engines, engines));
-    const stable = this.meta.engineIds === 64;
+    const stable = this.patches.length > 0 && this.patches.every((p) => p.engineIds === 64);
     const targetStable = !!dev.info.engineCatalog || stable;
     const historical = this.meta.engineIds !== 64;
     const noFm4 = historical && (engines || [])[1] === "-";

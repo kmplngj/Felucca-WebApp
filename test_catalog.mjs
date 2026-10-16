@@ -73,7 +73,7 @@ for (const E of [app, legacy]) {
   const oldPerc = E.readLibraryFile({ format: "felucca-patch", engine: 4, engineName: "SAMPLE", p: p.map((v, k) => k === 103 ? 4 : v) }, ctx).patches[0];
   assert.equal(oldPerc.engine, 10);
   // A newer file is stable even if labels collide, engines are missing, or the device has an older prefix.
-  const pt = { name: "future", engine: 40, engineName: "-", p: p.map((_, k) => k < 103 ? 0 : -64 + k - 103), fm6: app.FM6.INIT_PK };
+  const pt = { name: "future", engineIds: 64, engine: 40, engineName: "-", p: p.map((_, k) => k < 103 ? 0 : -64 + k - 103), fm6: app.FM6.INIT_PK };
   const file = E.libraryFile("library", [pt, { ...pt, engine: 11 }, { ...pt, engine: 12 }], ctx);
   const out = E.readLibraryFile(file, { engines: ["ANALOG", "-", "-"] });
   eq(out.patches.map((p) => p.engine), [40, 11, 12]); eq(out.patches[0].p, pt.p); eq(out.patches[2].fm6, pt.fm6);
@@ -191,6 +191,18 @@ console.log("backup: PER4/PER6/extended opaque round trips, restore order, prefl
   assert.equal(d.engineOk({ ...stablePhase, engineName: "" }), false);
   assert.equal(classicEngineOk({ ...stablePhase, engineName: "" }), false);
   d.info = info;
+  const reconnected = new Library(memoryStore()); await reconnected.init();
+  reconnected.meta = { engines: ["ANALOG", "PHASE", "LOFI"], keys: d.keys, engineIds: 64 };
+  await reconnected.add([{ name: "stable", engine: 2, engineName: "PHASE", engineIds: 64, p: new Array(111).fill(0) }]);
+  const compact = { keys: d.keys, info: { engines: ["ANALOG", "PHASE", "LOFI"] } };
+  await reconnected.importFiles([{ name: "old.json", text: JSON.stringify({ format: "felucca-patch", engine: 1, engineName: "PHASE", p: new Array(111).fill(0) }) }], compact);
+  assert.equal(reconnected.patches[1].engine, 1); assert.equal(reconnected.patches[1].engineIds, undefined);
+  assert.equal(reconnected.file("library", reconnected.patches).engineIds, undefined, "stale metadata cannot promote mixed source conventions");
+  await reconnected.adopt(d);
+  eq(reconnected.patches.map((p) => p.engine), [2, 2]);
+  classicState.lib = [{ engine: 2, engineName: "PHASE", engineIds: 64, p: new Array(111).fill(0) }, { engine: 1, engineName: "PHASE", p: new Array(111).fill(0) }];
+  classicState.libMeta = { engines: compact.info.engines, keys: d.keys, engineIds: 64 };
+  await adoptClassic(d); eq(classicState.lib.map((p) => p.engine), [2, 2]);
   const st = memoryStore(), lib = new Library(st); await lib.init(); lib.meta = { engines: names, keys: null, engineIds: 64 };
   const fm = { name: "absent", engine: 12, engineName: "-", engineIds: 64, p: new Array(111).fill(0), fm6: app.FM6.INIT_PK };
   await lib.add([fm, { ...fm, engine: 40 }]); d.keys = Array.from({ length: 111 }, (_, k) => `P${k}`);

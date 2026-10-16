@@ -996,7 +996,7 @@ function cleanPatch(pt) {
 function libraryFile(kind, patches, ctx) {
   return {
     format: LIB.FORMAT, version: LIB.VERSION, kind, firmware: ctx.firmware || "",
-    pCount: ctx.keys ? ctx.keys.length : 0, pE0: ctx.pe0 ?? null, paramLabels: ctx.keys || [], engines: ctx.engines || [], engineIds: ctx.engineIds || (patches.length && patches.every((p) => p.engineIds === 64) ? 64 : undefined),
+    pCount: ctx.keys ? ctx.keys.length : 0, pE0: ctx.pe0 ?? null, paramLabels: ctx.keys || [], engines: ctx.engines || [], engineIds: (patches.length && patches.every((p) => p.engineIds === 64) ? 64 : undefined),
     exported: new Date().toISOString(),
     patches: patches.map((x) => {
       const c = cleanPatch(x);
@@ -1037,7 +1037,7 @@ function readLibraryFile(obj, ctx) {
     if (e < 0) return { patches: [], skipped: 1, keys: null };
     const p = ctx.keys && ctx.pe0 && obj.p.length !== ctx.keys.length ? tailParams(obj.p, ctx.keys.length, ctx.pe0)
       : obj.p.slice(0, ctx.keys ? ctx.keys.length : obj.p.length);
-    const pt = fm4({ name: obj.presetName || obj.engineName || "PATCH", engine: e, engineIds: stable ? 64 : undefined, engineName: obj.engineName, p, fm6: obj.fm6, fm4: obj.fm4,
+    const pt = fm4({ name: obj.presetName || obj.engineName || "PATCH", engine: e, engineIds: stable || ctx.engineIds === 64 ? 64 : undefined, engineName: obj.engineName, p, fm6: obj.fm6, fm4: obj.fm4,
       pattern: Array.isArray(obj.steps) ? patternFromSteps(obj.steps) : null, tags: ["file"] }, obj.engineName,
       ctx.keys && ctx.pe0 ? ctx.pe0 : p.length - 8);
     return pt ? { patches: [cleanPatch(pt)], skipped: 0, keys: null } : { patches: [], skipped: 1, keys: null };
@@ -1057,7 +1057,7 @@ function readLibraryFile(obj, ctx) {
     if (e < 0) { skipped++; continue; }
     const p = remapParams(x.params, fileKeys, ctx.keys, ctx.pe0);
     const pe0 = ctx.keys && ctx.pe0 ? ctx.pe0 : obj.pE0 ?? p.length - 8;
-    const mapped = cleanPatch({ ...x, engine: e, engineIds: patchStable ? 64 : undefined,
+    const mapped = cleanPatch({ ...x, engine: e, engineIds: patchStable || ctx.engineIds === 64 ? 64 : undefined,
       engineName: patchStable ? x.engineName || (obj.engines || [])[x.engine] || ""
         : (ctx.engines || [])[e] || x.engineName || (obj.engines || [])[x.engine], p });
     const pt = digital ? fromDigital(mapped, ctx.engines, pe0) || mapped : patchStable ? mapped : perc(mapped, pe0);

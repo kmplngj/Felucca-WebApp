@@ -1198,7 +1198,7 @@ function cleanPatch(pt) {
 function libraryFile(kind, patches, ctx) {
   return {
     format: LIB.FORMAT, version: LIB.VERSION, kind, firmware: ctx.firmware || "",
-    pCount: ctx.keys ? ctx.keys.length : 0, pE0: ctx.pe0 ?? null, paramLabels: ctx.keys || [], engines: ctx.engines || [], engineIds: ctx.engineIds || (patches.length && patches.every((p) => p.engineIds === 64) ? 64 : undefined),
+    pCount: ctx.keys ? ctx.keys.length : 0, pE0: ctx.pe0 ?? null, paramLabels: ctx.keys || [], engines: ctx.engines || [], engineIds: (patches.length && patches.every((p) => p.engineIds === 64) ? 64 : undefined),
     exported: new Date().toISOString(),
     patches: patches.map((x) => {
       const c = cleanPatch(x);
@@ -1239,7 +1239,7 @@ function readLibraryFile(obj, ctx) {
     if (e < 0) return { patches: [], skipped: 1, keys: null };
     const p = ctx.keys && ctx.pe0 && obj.p.length !== ctx.keys.length ? tailParams(obj.p, ctx.keys.length, ctx.pe0)
       : obj.p.slice(0, ctx.keys ? ctx.keys.length : obj.p.length);
-    const pt = fm4({ name: obj.presetName || obj.engineName || "PATCH", engine: e, engineIds: stable ? 64 : undefined, engineName: obj.engineName, p, fm6: obj.fm6, fm4: obj.fm4,
+    const pt = fm4({ name: obj.presetName || obj.engineName || "PATCH", engine: e, engineIds: stable || ctx.engineIds === 64 ? 64 : undefined, engineName: obj.engineName, p, fm6: obj.fm6, fm4: obj.fm4,
       pattern: Array.isArray(obj.steps) ? patternFromSteps(obj.steps) : null, tags: ["file"] }, obj.engineName,
       ctx.keys && ctx.pe0 ? ctx.pe0 : p.length - 8);
     return pt ? { patches: [cleanPatch(pt)], skipped: 0, keys: null } : { patches: [], skipped: 1, keys: null };
@@ -1259,7 +1259,7 @@ function readLibraryFile(obj, ctx) {
     if (e < 0) { skipped++; continue; }
     const p = remapParams(x.params, fileKeys, ctx.keys, ctx.pe0);
     const pe0 = ctx.keys && ctx.pe0 ? ctx.pe0 : obj.pE0 ?? p.length - 8;
-    const mapped = cleanPatch({ ...x, engine: e, engineIds: patchStable ? 64 : undefined,
+    const mapped = cleanPatch({ ...x, engine: e, engineIds: patchStable || ctx.engineIds === 64 ? 64 : undefined,
       engineName: patchStable ? x.engineName || (obj.engines || [])[x.engine] || ""
         : (ctx.engines || [])[e] || x.engineName || (obj.engines || [])[x.engine], p });
     const pt = digital ? fromDigital(mapped, ctx.engines, pe0) || mapped : patchStable ? mapped : perc(mapped, pe0);
@@ -4615,7 +4615,7 @@ let libBusy = false;           /* a library / bank operation is running */
 const newId = () => (self.crypto && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
 const nowIso = () => new Date().toISOString();
 const slotName = (i) => "U" + String(i + 1).padStart(2, "0");
-const libCtx = () => (dev && dev.keys ? { keys: dev.keys, engines: dev.info.engines, firmware: dev.info.version, pe0: dev.info.pe0, engineIds: dev.info.engineCatalog ? 64 : libMeta.engineIds }
+const libCtx = () => (dev && dev.keys ? { keys: dev.keys, engines: dev.info.engines, firmware: dev.info.version, pe0: dev.info.pe0, engineIds: dev.info.engineCatalog ? 64 : undefined }
   : { keys: libMeta.keys, engines: libMeta.engines, firmware: "", pe0: libMeta.pe0, engineIds: libMeta.engineIds });
 
 async function libInit() {
@@ -4651,7 +4651,7 @@ async function libUpdate(p) {
 async function libAdopt(d) {
   const keys = d.keys, engines = d.info.engines, changed = [];
   const relayout = (libMeta.keys && !sameKeys(libMeta.keys, keys)) || (libMeta.engines && !sameKeys(libMeta.engines, engines));
-  const stable = libMeta.engineIds === 64;
+  const stable = lib.length > 0 && lib.every((p) => p.engineIds === 64);
   const targetStable = !!d.info.engineCatalog || stable;
   const historical = libMeta.engineIds !== 64;
   const noFm4 = historical && (engines || [])[1] === "-";
