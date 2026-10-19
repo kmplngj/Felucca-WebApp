@@ -2895,7 +2895,16 @@ function resetBusy() { busyEpoch++; busy = 0; }
 let dragging = null;   /* key of the slider being dragged */
 let wantConnected = false;
 const ctl = new Map(); /* key "s:id" -> {input, out, desc, scope, id, row} */
-const sets = new Map(); /* key -> {last: time of the user's last change, sent: the value last requested} */
+/* key -> {last: time of the user's last change, sent: the value of the newest SET still queued or in flight (null:
+   none), n: SETs not answered yet}. A value is remembered only while a request carries it (userSet, sendSet). */
+const sets = new Map();
+let setEpoch = 0;       /* counts the transitions (track, sound, session) that forget every control's state */
+/* a track / sound / session transition or a reload: no control remembers anything. An old SET may still be in
+   flight; its reply no longer paints (sendSet), and an equal value asked for now is sent again */
+function resetSets() {
+  setEpoch++;
+  for (const st of sets.values()) st.sent = null;
+}
 let needReload = false; /* a RELOAD push came: re-read DESC, DUMP and steps when free */
 let lastDump = 0;      /* Date.now() of the last DUMP */
 /* the device also pushes RELOAD after loads the editor asked for (PROJECT load, UP_LOAD; before INFO 53 bit 1
@@ -3003,6 +3012,7 @@ function disconnect(reasonKey = "disconnected") {
   }
   dev = null;
   resetBusy();
+  resetSets();
   needReload = false;
   renderPanels();
   renderMixer();
@@ -3043,6 +3053,7 @@ async function getStep(i, d = dev) { return parse[CMD.STEP_GET](await sessionReq
 async function load(d) {
   const releaseBusy = beginBusy();
   try {
+    resetSets();                                    /* a new session starts with no remembered control state */
     /* the first frame after opening the port can be lost: a few tries */
     d.info = parse[CMD.INFO](await sessionRequest(d, req.info(), { timeout: 500, retries: 3 }));
     $("version").textContent = d.info.version;
@@ -3144,6 +3155,7 @@ function selectTrack(i) {
   if (!dev || !hasTracks() || i === dev.sel) return;
   op(async () => {
     dev.sel = parse[CMD.TRACK](await rq(req.track(i))).sel;
+    resetSets();                                    /* the same control on another track is another control */
     await afterSoundChange();
   });
 }
@@ -3312,24 +3324,27 @@ function userSet(s, id, v, final) {
   showValue(k, v, false);
   mixFromDump();
   let st = sets.get(k);
-  if (!st) sets.set(k, (st = { last: 0, sent: null }));
+  if (!st) sets.set(k, (st = { last: 0, sent: null, n: 0 }));
   st.last = performance.now();
-  if (v === st.sent) return;                        /* the last request already carries it */
+  if (st.n > 0 && v === st.sent) return;            /* a SET still queued / in flight carries it; an answered one never counts */
   sendSet(s, id, k);
 }
 async function sendSet(s, id, k) {
   if (!dev) return;
-  const st = sets.get(k);
+  const st = sets.get(k), epoch = setEpoch;
   const v = (s ? dev.dump.g : dev.dump.p)[id];
   st.sent = v;
+  st.n++;
   try {
     const r = parse[CMD.SET](await rq(req.set(s, id, v), { key: k }));
-    if (dev && dragging !== k && st.sent === v && !dev.link.hasQueued(k)) {   /* the device's value after clamping */
+    /* the device's value after clamping (not after a transition: that dump was read again) */
+    if (dev && epoch === setEpoch && dragging !== k && st.sent === v && !dev.link.hasQueued(k)) {
       (s ? dev.dump.g : dev.dump.p)[id] = r.value;
       showValue(k, r.value, false);
       mixFromDump();
     }
-  } catch (e) { if (e.message !== "closed") console.warn(e); }
+  } catch (e) { if (e.message !== "closed") console.warn(e); }   /* (rejected, timed out or closed: the next one is sent) */
+  finally { if (--st.n <= 0) { st.n = 0; st.sent = null; } }   /* answered: nothing is suppressed any more */
 }
 
 /* engine / preset browser */
@@ -3347,7 +3362,8 @@ async function choosePreset(e, p) {
 async function afterSoundChange(msg = "ready", d = dev) {
   assertSession(d);
   needReload = false;                               /* this re-reads everything a RELOAD asks for */
-  d.dump = await getDump(d);
+  resetSets();
+  d.dump = await getDump(d);                        /* (no reset after: a SET started meanwhile must still paint) */
   await rereadEngineDesc(d);
   updateBrowser();
   refreshAll();
@@ -4321,6 +4337,8 @@ function onPush(f) {
       if (touched(k)) return;                       /* the user's value wins; their SET follows */
       const old = arr[c.id];
       arr[c.id] = c.value;
+      const st = sets.get(k);
+      if (st) st.sent = null;                       /* the device moved it: the old request no longer says what it is */
       showValue(k, c.value, false);
       blink(k);
       mixFromDump();
@@ -4417,6 +4435,7 @@ setInterval(async () => {
       showValue(k, v, false);
     }
     d.dump = dump;
+    if (soundChanged) resetSets();
     if (engineChanged) await rereadEngineDesc();
     if (hasTracks()) await readMixer();             /* the strips (other tracks push nothing) */
     if (soundChanged) { updateBrowser(); await loadSteps(); sayK("ready"); return; }
@@ -4545,6 +4564,7 @@ $("file").addEventListener("change", async () => {
   try {
     selfLoad(true);
     await rq(req.preset(data.engine, data.preset));
+    resetSets();
     dev.dump = await getDump();
     await rereadEngineDesc();
     const n = Math.min(data.p.length, dev.info.pcount);

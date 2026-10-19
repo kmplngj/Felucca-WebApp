@@ -1516,13 +1516,323 @@ async function editorSong() {
   l.close(); old.stop();
 }
 
+/* ------------------------------------------------- same-value SET (kmplngj/Felucca#435) --- */
+/* The retained editor's own userSet / sendSet, the track / sound / session transitions (selectTrack,
+   afterSoundChange, disconnect, a CHANGED push) and Link, cut out of editor.html and run against the mock device
+   over a transport that holds each frame until the test lets it through, so "queued", "in flight" and "answered"
+   are under control. Clock and DOM are fakes. */
+async function editorSetGate() {
+  const C = E.CMD;
+  const fn = (head, end = "\n}\n") => {
+    const i = html.indexOf(head);
+    if (i < 0) throw new Error("editor.html: no " + head);
+    return html.slice(i, html.indexOf(end, i) + end.length);
+  };
+  const line = (head) => fn(head, "\n");
+  const state = html.slice(html.indexOf("let busy = 0;"), html.indexOf("/* parameter ids (felucca/src/core.h)"));
+  const code = [state, line("const P = { LEVEL: 0, SLEN: 29 };"), line("const key = "), line("const pSlen = "), line("const gEng = "),
+    line("const hasTracks = "), fn("function assertSession("), fn("async function sessionRequest("), line("const rq = "),
+    fn("async function getDump("), fn("function showValue("), fn("function touched("), fn("function userSet("),
+    fn("async function sendSet("), fn("function selectTrack("), fn("async function afterSoundChange("), fn("function refreshAll("),
+    fn("function maybeReload("), fn("async function op("), fn("function onPush("), fn("function disconnect(")].join("\n");
+  const proto0 = proto;
+  const clock = { t: 100000 };
+  const noop = () => {};
+  const log = { warn: [], reports: [], paints: 0 };
+  const node = () => ({ dataset: {}, classList: { add: noop, remove: noop }, replaceChildren: noop });
+  const G = vm.runInNewContext(proto0 + `
+let dev = null, panning = false;
+${code}
+;({ get dev() { return dev; }, set dev(v) { dev = v; }, get dragging() { return dragging; }, set dragging(v) { dragging = v; },
+   ctl, sets, resetSets, userSet, selectTrack, afterSoundChange, onPush, disconnect, maybeReload, busyCount: () => busy,
+   needReload: () => needReload, key, frame, parse, req, CMD, Link, makeMockDevice, F, fmtValue, startWatch })`, {
+    setTimeout, clearTimeout, setInterval, clearInterval, Date, Math, JSON, Error, Promise,
+    console: { log() {}, error() {}, debug() {}, warn: (...a) => log.warn.push(a.map(String).join(" ")) },
+    performance: { now: () => clock.t },
+    document: { activeElement: null },
+    window: { addEventListener: noop },
+    $: () => node(),
+    modDst: (d, txt) => txt, mixFromDump: () => { log.paints++; }, updateBrowser: noop, rereadEngineDesc: async () => {}, loadSteps: async () => {},
+    readMixer: async () => {}, renderSteps: noop, refreshStep: noop, updateStrip: noop, blink: noop, samplesLeave: noop,
+    renderPanels: noop, renderMixer: noop, renderSysinfo: noop, renderLive: noop, renderLib: noop, renderBank: noop,
+    renderPreferences: noop, setLabel: noop, t: (k) => k, sayK: noop, report: (e) => { if (e && e.message !== "closed") log.reports.push(e.message); },
+    mixTouched: () => false,
+  });
+
+  /* a session: mock device + Link behind a gate. gate.hold: frames wait; pass() lets the oldest through; drop(): a frame
+     the device never answers */
+  async function session(opt = {}) {
+    const m = E.makeMockDevice({ auto: false, ...opt });
+    const inp = [...m.access.inputs.values()][0], out = [...m.access.outputs.values()][0];
+    const gate = { hold: false, held: [], sets: [], frames: [], silent: false };
+    const link = new G.Link((d) => {
+      const f = { cmd: d[4], a: Array.from(d.slice(5, -1)) };
+      gate.frames.push(f);
+      if (f.cmd === C.SET) gate.sets.push(f);
+      if (gate.silent) return;
+      if (gate.hold) gate.held.push(d); else out.send(d);
+    }, { timeout: opt.timeout || 300, onPush: (f) => G.onPush(f) });
+    inp.onmidimessage = (e) => link.receive(e.data);
+    gate.pass = () => { const d = gate.held.shift(); if (d) out.send(d); };
+    const d = { link, input: inp, output: out, info: null, pdesc: [], gdesc: [], names: [], dump: null, steps: [], watch: false, sel: 0 };
+    d.info = G.parse[C.INFO](await link.request(G.req.info()));
+    for (let i = 0; i < d.info.pcount; i++) d.pdesc[i] = G.parse[C.DESC](await link.request(G.req.desc(0, i)));
+    for (let i = 0; i < d.info.gcount; i++) d.gdesc[i] = G.parse[C.DESC](await link.request(G.req.desc(1, i)));
+    G.dev = d;
+    d.sel = G.parse[C.TRACK](await link.request(G.req.track())).sel;
+    d.dump = G.parse[C.DUMP](await link.request(G.req.dump()), d.info);
+    gate.frames.length = 0;
+    return { m, d, gate, link, close: () => { link.close(); m.stop(); } };
+  }
+  /* controls the way paramRow makes them: a value holder + text */
+  const addCtl = (S, label, scope = 0) => {
+    const list = scope ? S.d.gdesc : S.d.pdesc;
+    const id = list.findIndex((x, i) => x && x.label === label && (scope || i < S.d.info.pe0));
+    const k = G.key(scope, id), desc = list[id];
+    const c = { input: { value: "", tagName: desc.fmt === E.F.ENUM ? "SELECT" : "INPUT" }, out: { textContent: "" }, desc, scope, id, row: node() };
+    G.ctl.set(k, c);
+    G.ctl.get(k).input.value = String((scope ? S.d.dump.g : S.d.dump.p)[id]);
+    return { id, k, desc, c };
+  };
+  const dev0 = async (S, id, scope = 0) => E.parse[C.GET](await S.link.request(E.req.get(scope, id))).value;
+  const idle = async (S) => { for (let n = 0; n < 200 && (S.link.cur || S.link.q.length || G.busyCount()); n++) await sleep(5); await sleep(5); };
+  const letThrough = async (S, n = 1) => { for (let i = 0; i < n; i++) { S.gate.pass(); await sleep(40); } };
+  const val = (S, X) => S.d.dump.p[X.id];
+  const setsSent = (S) => S.gate.sets.length;
+  const settle = async (S) => { S.gate.hold = false; while (S.gate.held.length) { S.gate.pass(); await sleep(40); } await idle(S); };
+
+  /* 1. the same DIV on two tracks: the retained editor's real selectTrack / afterSoundChange */
+  {
+    const S = await session();
+    const DIV = addCtl(S, "DIV");
+    G.userSet(0, DIV.id, 1, true);
+    await idle(S);
+    ok(setsSent(S) === 1 && await dev0(S, DIV.id) === 1, "setgate: DIV 1/8 on the first track is sent");
+    G.selectTrack(1);
+    await idle(S);
+    const before = await dev0(S, DIV.id);
+    G.userSet(0, DIV.id, 1, true);
+    await idle(S);
+    ok(S.d.sel === 1 && before !== 1 && setsSent(S) === 2 && await dev0(S, DIV.id) === 1,
+      `setgate: the same DIV on a second track is sent again (track ${S.d.sel + 1}: ${before} -> 1)`);
+    G.selectTrack(0);
+    await idle(S);
+    ok(S.d.sel === 0 && val(S, DIV) === 1 && DIV.c.input.value === "1", "setgate: back on the first track its own DIV is shown");
+    S.close();
+  }
+
+  /* 2. an answered request never suppresses the same value, also after the knob moved it (external CHANGED) */
+  {
+    const S = await session({ watchMs: 5000 });
+    const DIV = addCtl(S, "DIV");
+    S.d.watch = await G.startWatch((r, o) => S.link.request(r, o));
+    G.userSet(0, DIV.id, 1, true);
+    await idle(S);
+    G.userSet(0, DIV.id, 1, true);
+    await idle(S);
+    ok(setsSent(S) === 2, "setgate: an answered SET does not suppress the same value asked for again");
+    clock.t += 2000;
+    S.m.sim.param(S.d.sel, DIV.id, 3);
+    await sleep(30);
+    ok(val(S, DIV) === 3 && DIV.c.input.value === "3", "setgate: an external CHANGED moves the control");
+    G.userSet(0, DIV.id, 1, true);
+    await idle(S);
+    ok(setsSent(S) === 3 && await dev0(S, DIV.id) === 1, "setgate: the same value after an external CHANGED is sent");
+    /* a CHANGED does not clear the state of a request still pending: the user's value wins */
+    S.gate.hold = true;
+    G.userSet(0, DIV.id, 2, true);
+    S.m.sim.param(S.d.sel, DIV.id, 4);
+    await sleep(30);
+    ok(val(S, DIV) === 2 && setsSent(S) === 4, "setgate: a CHANGED during the user's own pending SET leaves the user's value");
+    await settle(S);
+    ok(await dev0(S, DIV.id) === 2, "setgate: ... and the SET lands last");
+    S.close();
+  }
+
+  /* 3. after a sound / device reload (RELOAD push, polling, afterSoundChange) and after a session */
+  {
+    const S = await session({ watchMs: 5000 });
+    const DIV = addCtl(S, "DIV");
+    G.userSet(0, DIV.id, 1, true);
+    await idle(S);
+    S.m.sim.param(S.d.sel, DIV.id, 3);                         /* done on the device: watch not on, no push */
+    await G.afterSoundChange("reloaded");
+    ok(val(S, DIV) === 3, "setgate: the reload shows what the device has");
+    G.userSet(0, DIV.id, 1, true);
+    await idle(S);
+    ok(setsSent(S) === 2 && await dev0(S, DIV.id) === 1, "setgate: the same value after a sound reload is sent");
+    /* a RELOAD push (the device's own track / preset change) takes the same path */
+    S.d.watch = await G.startWatch((r, o) => S.link.request(r, o));
+    S.m.sim.param(S.d.sel, DIV.id, 4);
+    await idle(S);
+    const n0 = setsSent(S);
+    S.m.sim.reload();
+    await sleep(40);
+    ok(G.needReload() || G.busyCount() === 0, "setgate: a RELOAD push asks for a reload");
+    G.maybeReload();
+    await idle(S);
+    G.userSet(0, DIV.id, val(S, DIV), true);
+    await idle(S);
+    ok(setsSent(S) === n0 + 1, "setgate: ... and the value the reload showed can be asked for at once");
+    /* a SET still in flight when the reload starts does not hold the new value back */
+    S.gate.hold = true;
+    G.userSet(0, DIV.id, 2, true);
+    const n1 = setsSent(S);
+    const reload = G.afterSoundChange("reloaded");
+    ok(!S.link.hasQueued(DIV.k), "setgate: (the reload's DUMP waits behind the SET in flight)");
+    G.userSet(0, DIV.id, 2, true);
+    ok(S.link.hasQueued(DIV.k), "setgate: a SET in flight across a reload does not suppress the same value after it");
+    await settle(S);
+    await reload;
+    ok(setsSent(S) === n1 + 1, "setgate: ... both are sent");
+    S.close();
+  }
+  /* a control changed while the reload's DUMP is pending: its SET (queued behind the DUMP) must apply */
+  {
+    const S = await session();
+    const DIV = addCtl(S, "DIV");
+    const nv = val(S, DIV) === 2 ? 3 : 2;
+    S.gate.hold = true;
+    const reload = G.afterSoundChange("reloaded");
+    await sleep(20);
+    DIV.c.input.value = String(nv);                            /* (the user moved the control) */
+    G.userSet(0, DIV.id, nv, true);                            /* the DUMP is in flight, the SET waits behind it */
+    ok(S.link.hasQueued(DIV.k), "setgate: (a SET waits behind the reload's pending DUMP)");
+    await settle(S);
+    await reload;
+    await idle(S);
+    ok(await dev0(S, DIV.id) === nv && val(S, DIV) === nv && DIV.c.input.value === String(nv),
+      `setgate: a control changed while the reload's DUMP is pending keeps the new value (${nv}; dump ${val(S, DIV)}, shown ${DIV.c.input.value})`);
+    S.close();
+  }
+  {
+    const S = await session();
+    const DIV = addCtl(S, "DIV");
+    S.gate.hold = true;
+    G.userSet(0, DIV.id, 1, true);                             /* in flight when the device goes */
+    const old = S.d;
+    G.disconnect();
+    S.gate.hold = false;
+    ok(G.dev === null && G.sets.get(DIV.k).sent === null, "setgate: disconnect forgets what was requested");
+    const S2 = await session();
+    const DIV2 = addCtl(S2, "DIV");
+    G.userSet(0, DIV2.id, 1, true);
+    await idle(S2);
+    ok(setsSent(S2) === 1 && await dev0(S2, DIV2.id) === 1 && old !== S2.d,
+      "setgate: the same value on a new session is sent");
+    S.m.stop();
+    S2.close();
+  }
+
+  /* 4. a drag: duplicates while pending stay coalesced, the newest value wins, post-clamp display after it */
+  {
+    const S = await session();
+    const SWG = addCtl(S, "SWG");
+    const slide = (v, final = false) => { SWG.c.input.value = String(v); G.userSet(0, SWG.id, v, final); };
+    S.gate.hold = true;
+    G.dragging = SWG.k;
+    slide(20);                                                  /* in flight */
+    slide(20);                                                  /* the same, pending: not sent again */
+    slide(30);                                                  /* queued */
+    slide(30);
+    slide(25);                                                  /* queued: the latest args win */
+    slide(30);
+    slide(40);
+    slide(40);
+    ok(setsSent(S) === 1 && S.link.q.length === 1 && S.link.q[0].args.length === 4, "setgate: drag, duplicates while pending add no request");
+    await letThrough(S, 1);
+    ok(setsSent(S) === 2 && S.d.dump.p[SWG.id] === 40, "setgate: the queued request goes with the latest value (one request in flight)");
+    slide(20);                                                  /* equals the answered first request: still a new action */
+    ok(S.link.q.length === 1 && S.link.hasQueued(SWG.k), "setgate: ... a value equal to an answered one replaces the queued value");
+    slide(20);
+    await settle(S);
+    ok(await dev0(S, SWG.id) === 20 && setsSent(S) === 3, "setgate: the final value wins");
+    G.dragging = null;
+    G.userSet(0, SWG.id, 20, true);                             /* pointerup with the value already answered */
+    await idle(S);
+    ok(setsSent(S) === 4 && SWG.c.out.textContent !== "", "setgate: the release sends again once answered and paints the device's value");
+    /* the queued newer value is not undone by the older one in flight: 1 in flight, 2 queued, 1 again, 2 again */
+    S.gate.hold = true;
+    G.userSet(0, SWG.id, 1, true);
+    G.userSet(0, SWG.id, 2, true);
+    G.userSet(0, SWG.id, 1, true);                              /* queued carries 2: this is newer, not a duplicate of the one in flight */
+    const q1 = S.link.q.length;
+    G.userSet(0, SWG.id, 1, true);                              /* the queued one carries 1 */
+    ok(q1 === 1 && S.link.q.length === 1 && setsSent(S) === 5, "setgate: queued 2 then 1: the older in-flight equal value does not swallow the newer");
+    await settle(S);
+    ok(await dev0(S, SWG.id) === 1 && S.d.dump.p[SWG.id] === 1, "setgate: ... it ends on the newer value");
+    S.close();
+  }
+
+  /* 5. clamping: the device's value is shown; the same out-of-range value is asked for again once answered */
+  {
+    const S = await session();
+    const SWG = addCtl(S, "SWG");
+    const max = SWG.desc.max;
+    G.userSet(0, SWG.id, max + 40, true);
+    G.userSet(0, SWG.id, max + 40, true);                       /* pending: one request */
+    ok(setsSent(S) === 1, "setgate: the same out-of-range value while pending is one request");
+    await idle(S);
+    ok(val(S, SWG) === max && SWG.c.out.textContent === `${max} %`, `setgate: the clamped value is shown (${max + 40} -> ${val(S, SWG)}, ${SWG.c.out.textContent})`);
+    G.userSet(0, SWG.id, max + 40, true);
+    await idle(S);
+    ok(setsSent(S) === 2 && val(S, SWG) === max, "setgate: asked for again after the answer, clamped again");
+    /* a newer value queued: the older reply does not overwrite it */
+    S.gate.hold = true;
+    G.userSet(0, SWG.id, max + 40, true);
+    G.userSet(0, SWG.id, 10, true);
+    await letThrough(S, 1);
+    ok(val(S, SWG) === 10 && SWG.c.out.textContent === "10 %", "setgate: the reply to an older request does not repaint over a queued newer value");
+    await settle(S);
+    ok(await dev0(S, SWG.id) === 10, "setgate: ... the newer value is what the device ends with");
+    /* a reply from before a transition does not paint over the dump read after it */
+    S.gate.hold = true;
+    G.userSet(0, SWG.id, max + 40, true);
+    S.d.dump.p[SWG.id] = 55;                                    /* what the transition's DUMP says */
+    SWG.c.input.value = "55";
+    G.resetSets();
+    await settle(S);
+    ok(val(S, SWG) === 55, "setgate: the reply to a SET from before a transition paints nothing");
+    S.close();
+  }
+
+  /* 6. rejected / closed requests do not stay remembered */
+  {
+    const S = await session({ timeout: 40 });
+    const DIV = addCtl(S, "DIV");
+    S.gate.silent = true;                                       /* the device does not answer */
+    G.userSet(0, DIV.id, 1, true);
+    G.userSet(0, DIV.id, 1, true);
+    ok(setsSent(S) === 1, "setgate: unanswered, the same value is still one pending request");
+    await sleep(200);
+    ok(G.sets.get(DIV.k).n === 0 && G.sets.get(DIV.k).sent === null && log.warn.length > 0, "setgate: a timed-out SET is forgotten");
+    S.gate.silent = false;
+    G.userSet(0, DIV.id, 1, true);
+    await idle(S);
+    ok(setsSent(S) >= 2 && await dev0(S, DIV.id) === 1, "setgate: ... and the same value is sent again");
+    const rejected = setsSent(S);
+    S.gate.hold = true;
+    G.userSet(0, DIV.id, 2, true);
+    S.link.close();                                             /* the port closes under the pending SET */
+    await sleep(10);
+    ok(G.sets.get(DIV.k).n === 0 && G.sets.get(DIV.k).sent === null, "setgate: a closed request is forgotten");
+    G.userSet(0, DIV.id, 2, true);                              /* the closed link refuses, nothing is stuck */
+    await sleep(10);
+    ok(G.sets.get(DIV.k).n === 0 && G.sets.get(DIV.k).sent === null && setsSent(S) === rejected + 1,
+      "setgate: a SET on a closed link is refused without leaving state behind");
+    S.m.stop();
+    G.dev = null;
+  }
+  ok(!log.reports.length, "setgate: no errors were reported");
+}
+
 /* Run the page's actual session helpers and connect-load path with delayed replies. */
 async function editorSessions() {
   const state = html.slice(html.indexOf("let busy = 0;"), html.indexOf("let dragging", html.indexOf("let busy = 0;")));
   const requests = html.slice(html.indexOf("function assertSession(d)"), html.indexOf("/* the whole connect sequence */"));
   const loading = html.slice(html.indexOf("async function load(d)"), html.indexOf("async function getDescOrNull"));
   const library = html.slice(html.indexOf("async function libOp(fn)"), html.indexOf("const checkRc", html.indexOf("async function libOp(fn)")));
-  let shown = 0, adopted, adoptStarted;
+  let shown = 0, adopted, adoptStarted, setResets = 0;
   const nodes = new Map();
   const noop = () => {};
   const S = vm.runInNewContext(`let dev = null, lastDump = 0, libBusy = false; ${state} ${requests} ${loading} ${library}
@@ -1537,6 +1847,7 @@ async function editorSessions() {
     buildUI: () => { shown++; }, renderPanels: noop, loadSteps: noop,
     startWatch: async () => false, renderLive: noop, renderLib: noop,
     renderBank: noop, renderSysinfo: noop, sayK: noop, report: noop, syncPreferences: noop,
+    resetSets: () => { setResets++; },
   });
   const oldRelease = S.beginBusy();
   S.resetBusy();
@@ -1581,6 +1892,7 @@ async function editorSessions() {
   S.setDevice(next);
   await S.load(next);
   ok(shown === 1 && S.count() === 0, "editor: a current connection still completes its initial load");
+  ok(setResets > 0, "editor: a new session's load forgets the remembered control state");
 
   const savedDevice = { link: { request: async () => { sent++; } } };
   sent = 0;
@@ -1813,6 +2125,7 @@ await editorMixer();
 await editorTrackParam();
 await editorSong();
 await editorSessions();
+await editorSetGate();
 await editorFm6();
 await editorFm6Bank();
 await editorMidiLearn();
