@@ -3363,8 +3363,7 @@ async function afterSoundChange(msg = "ready", d = dev) {
   assertSession(d);
   needReload = false;                               /* this re-reads everything a RELOAD asks for */
   resetSets();
-  d.dump = await getDump(d);
-  resetSets();
+  d.dump = await getDump(d);                        /* (no reset after: a SET started meanwhile must still paint) */
   await rereadEngineDesc(d);
   updateBrowser();
   refreshAll();

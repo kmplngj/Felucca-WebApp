@@ -1687,6 +1687,24 @@ ${code}
     ok(setsSent(S) === n1 + 1, "setgate: ... both are sent");
     S.close();
   }
+  /* a control changed while the reload's DUMP is pending: its SET (queued behind the DUMP) must apply */
+  {
+    const S = await session();
+    const DIV = addCtl(S, "DIV");
+    const nv = val(S, DIV) === 2 ? 3 : 2;
+    S.gate.hold = true;
+    const reload = G.afterSoundChange("reloaded");
+    await sleep(20);
+    DIV.c.input.value = String(nv);                            /* (the user moved the control) */
+    G.userSet(0, DIV.id, nv, true);                            /* the DUMP is in flight, the SET waits behind it */
+    ok(S.link.hasQueued(DIV.k), "setgate: (a SET waits behind the reload's pending DUMP)");
+    await settle(S);
+    await reload;
+    await idle(S);
+    ok(await dev0(S, DIV.id) === nv && val(S, DIV) === nv && DIV.c.input.value === String(nv),
+      `setgate: a control changed while the reload's DUMP is pending keeps the new value (${nv}; dump ${val(S, DIV)}, shown ${DIV.c.input.value})`);
+    S.close();
+  }
   {
     const S = await session();
     const DIV = addCtl(S, "DIV");
