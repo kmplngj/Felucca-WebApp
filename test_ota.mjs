@@ -56,8 +56,10 @@ try {
     assert.equal(u.upgrades + u.data, 0);
   }
   // Caller mutations during preflight awaits or progress callbacks cannot change served bytes.
+  class AliasedArray extends Uint8Array { slice() { return this; } }
+  for (const makeSource of [(b) => b.slice(), (b) => Buffer.from(b), (b) => new AliasedArray(b)]) {
   for (const method of ["install", "resume", "write"]) {
-    const source = image.slice(), u = new FakeUpdater(method === "install" ? "FM-1_900" : "ota-FM-1_900");
+    const source = makeSource(image), u = new FakeUpdater(method === "install" ? "FM-1_900" : "ota-FM-1_900");
     const callback = () => source.fill(0xFF);
     const pending = method === "install" ? u.install(source, "FM-1_900", callback)
       : method === "resume" ? u.resume(source, callback, "FM-1_900")
@@ -66,6 +68,7 @@ try {
     await pending;
     assert(u.images.length > 0);
     for (const served of u.images) assert.deepEqual(served, image);
+  }
   }
   const steps = [], u = new FakeUpdater();
   assert.equal(await u.resume(image, (k) => steps.push(k), "FM-1_900"), true);

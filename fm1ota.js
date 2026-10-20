@@ -186,7 +186,7 @@ export class Updater {
 
   // full install: running firmware -> loader -> new firmware
   async install(image, product, onStep) {
-    image = image instanceof Uint8Array ? image.slice() : image;
+    image = image instanceof Uint8Array ? new Uint8Array(image) : image;
     const expected = await this.expectedLoader(image, product);
     const step = onStep || (() => {});
     const dev = await this.find((id) => !IS_OTA(id));
@@ -218,7 +218,7 @@ export class Updater {
 
   // step 2 with the loader found by find()/waitFor()
   async write(ota, image, step = () => {}, product) {
-    image = image instanceof Uint8Array ? image.slice() : image;
+    image = image instanceof Uint8Array ? new Uint8Array(image) : image;
     const expected = await this.expectedLoader(image, product);
     this.requireLoader(ota, expected);
     ota.link.send(UPGRADE);
@@ -230,7 +230,7 @@ export class Updater {
 
   // Resume only an evidenced loader/package pair; application rescue still uses install().
   async resume(image, onStep, product) {
-    image = image instanceof Uint8Array ? image.slice() : image;
+    image = image instanceof Uint8Array ? new Uint8Array(image) : image;
     const expected = await this.expectedLoader(image, product);
     const ota = await this.find((id) => IS_OTA(id));
     if (!ota) return false;
