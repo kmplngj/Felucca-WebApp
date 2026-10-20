@@ -12,7 +12,7 @@ const image = customImage();
 const id = (text) => ({ text, model: text.startsWith("ota-") ? text.split("_")[0] : text.startsWith("FM-1_") ? "FM-1" : text.split("_")[0] });
 class FakeUpdater extends Updater {
   constructor(identity = "ota-FM-1_900", back = "FM-1_900", next = "ota-FM-1_900") {
-    super({}); this.identity = identity; this.back = back; this.next = next; this.probes = this.upgrades = this.data = 0;
+    super({}); this.identity = identity; this.back = back; this.next = next; this.probes = this.upgrades = this.data = 0; this.images = [];
   }
   dev(text) { return { id: id(text), link: { close() {}, send: () => { this.upgrades++; return true; } } }; }
   async find(filter) { this.probes++; const d = this.dev(this.identity); return filter(d.id) ? d : null; }
@@ -20,7 +20,7 @@ class FakeUpdater extends Updater {
     const d = this.dev(this.upgrades < 2 && !this.identity.startsWith("ota-") ? this.next : this.back || "ota-FM-1_900");
     return filter(d.id) ? d : null;
   }
-  async serve() { this.data++; return { finished: true, served: 1 }; }
+  async serve(link, bytes) { this.images.push(bytes.slice()); this.data++; return { finished: true, served: 1 }; }
 }
 const rejects = (f, code) => assert.rejects(f, (e) => e.code === code);
 for (const product of [undefined, null, "", "ota-FM-1_900", "FM-1_", "FM-1_hello", "FM-2_900"]) {
@@ -54,6 +54,18 @@ try {
     assert.equal(u.upgrades + u.data, 0);
     await rejects(() => u.write(u.dev(loader), image, undefined, "FM-1_900"), "incompatible");
     assert.equal(u.upgrades + u.data, 0);
+  }
+  // Caller mutations during preflight awaits or progress callbacks cannot change served bytes.
+  for (const method of ["install", "resume", "write"]) {
+    const source = image.slice(), u = new FakeUpdater(method === "install" ? "FM-1_900" : "ota-FM-1_900");
+    const callback = () => source.fill(0xFF);
+    const pending = method === "install" ? u.install(source, "FM-1_900", callback)
+      : method === "resume" ? u.resume(source, callback, "FM-1_900")
+      : u.write(u.dev(u.identity), source, callback, "FM-1_900");
+    source.fill(0); // occurs after the API call, before its first awaited result
+    await pending;
+    assert(u.images.length > 0);
+    for (const served of u.images) assert.deepEqual(served, image);
   }
   const steps = [], u = new FakeUpdater();
   assert.equal(await u.resume(image, (k) => steps.push(k), "FM-1_900"), true);
