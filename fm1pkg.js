@@ -261,3 +261,55 @@ export async function buildFeluccaPackage(stockBytes, appBytes, product) {
   pkg.setProduct(product);
   return pkg.serialize();
 }
+
+// App identity syntax shared with tools/build.py. A loader identity is never a target.
+export function validateUpdateProduct(product) {
+  if (typeof product !== "string" || !/^FM-1_[A-Z0-9._-]{1,15}$/.test(product) ||
+      [...product].some((c, i) => ((c.charCodeAt(0) + i + 1) & 0xFF) === 0x7D))
+    throw new Error("Expected a nonempty FM-1 application product from the selected package.");
+  return product;
+}
+
+// Derive the next handshake from bytes, never from the OTA record name or target version.
+// Reconstruct marker bytes to pin official V15 even when called through Updater.write directly.
+export async function updateLoaderFor(image, product) {
+  validateUpdateProduct(product);
+  if (!(image instanceof Uint8Array) || image.length < 0x400 || image.length > 0x200000)
+    throw new Error("Invalid FM-1 logical image.");
+  if (product === "FM-1_015") {
+    const raw = new Uint8Array(image.length + BLOCKS);
+    for (let i = 0; i < BLOCKS; i++) {
+      raw.set(image.subarray(i * KEEP, (i + 1) * KEEP), i * BLK);
+      raw[i * BLK + KEEP] = i < product.length ? product.charCodeAt(i) + i + 1 : 0x7D;
+    }
+    raw.set(image.subarray(BLOCKS * KEEP), BLOCKS * BLK);
+    await validateStockPackage(raw);
+    return "ota-FM-1_015";
+  }
+  const h = image.slice(0, 0x40); enc(h, 0, h.length);
+  const nent = u16(h, 8), end = 0x40 + nent * 0x50;
+  if (crc16(h.subarray(2)) !== u16(h, 0) || nent < 1 || nent > 11 ||
+      end > image.length || crc16(image.subarray(0x40, end)) !== u16(h, 2))
+    throw new Error("Invalid UFW header or entry list.");
+  const files = new Map();
+  for (let i = 0; i < nent; i++) {
+    const e = image.slice(0x40 + i * 0x50, 0x90 + i * 0x50); enc(e, 0, e.length);
+    const type = u16(e, 0), off = u32(e, 8), size = u32(e, 12);
+    if (off < end || off + size > image.length || crc16(image.subarray(off, off + size)) !== u16(e, 4) ||
+        ((type === 0 || type === 100) && files.has(type))) throw new Error("Invalid UFW file extent or CRC.");
+    files.set(type, { off, size });
+  }
+  const flash = files.get(0), loader = files.get(100);
+  if (!flash || flash.size !== 0x93000 || !loader || loader.off + 512 > image.length)
+    throw new Error("Missing or unsupported flash.bin / ota.bin.");
+  const b = image.subarray(loader.off, loader.off + loader.size), n = u32(b, 8);
+  const mark = new TextEncoder().encode("FELUCCA-LOADER-1\0");
+  const own = Array.from({ length: 65 }, (_, i) => 0x48 + i).some((off) =>
+    off + mark.length <= 0x48 + 64 && mark.every((v, i) => b[off + i] === v));
+  if (b.length < 0x40 || crc16(b.subarray(2, 32)) !== u16(b, 0) || u32(b, 4) !== 0x20 || b[12] !== 0x41 ||
+      loader.size !== n + 0x20 || n > 0x4E00 || crc16(b.subarray(0x22, 0x40)) !== u16(b, 0x20) ||
+      u32(b, 0x28) !== 0x01C0A800 || u32(b, 0x24) > 0x14000 ||
+      crc16(b.subarray(0x20)) !== u16(b, 2) || !own)
+    throw new Error("Not a supported Felucca update loader.");
+  return "ota-FM-1_900";
+}

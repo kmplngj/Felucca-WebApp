@@ -16,6 +16,7 @@ sent to a server. The site is published at https://hugelton.github.io/Felucca/.
 python3 serve.py            # http://localhost:8766/app/index.html?mock=1
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
+node test_ota.mjs           # updater preflight / resume contract, fake devices and time
 node test_backup.mjs        # the full backup
 node test_catalog.mjs       # catalogs, stable ids and settings compatibility
 ```
@@ -33,6 +34,32 @@ NOISE or FM6; all compiler outputs stay in a temporary directory. Without the fi
 JavaScript checks still run and this native check is explicitly skipped.
 
 The editor protocol is described in the firmware repository (`web/EDITOR_PROTOCOL.md`).
+
+## Update and resume compatibility
+
+Every `Updater.install(image, product, onStep)`, `resume(image, onStep, product)` and
+`write(device, image, onStep, product)` call requires the selected package's application product.
+Missing, malformed or loader products fail before discovery or update traffic. Products follow the
+firmware build's `FM-1_` plus 1–15 uppercase ASCII letters, digits, dots, underscores or hyphens.
+The final application handshake must exactly match that product; an absent or different application
+never reports completion. The page already supplies its selected product for both install and resume.
+
+| Selected package | Accepted loader handshake |
+| --- | --- |
+| CRC-checked UFW containing Felucca's supported loader heads and initial `FELUCCA-LOADER-1` marker | `ota-FM-1_900` |
+| Unmodified official V15, pinned by SHA-256 and checked package layout | `ota-FM-1_015` |
+
+Each pair is checked again at the public write boundary, including loaders discovered after staging.
+Other loader identities and crossed pairs are refused before sending an upgrade command or image bytes
+to that loader. A package product in the 9xx range does not establish loader compatibility.
+The `ota-FM-1_015` string in the firmware's update record does not describe the custom loader's handshake.
+An early rescue application answering `FM-1_…` follows the regular staging flow before its package's
+loader is checked. These rules describe existing loader recovery; they do not add a recovery command.
+
+`node test_ota.mjs` exercises the contract without hardware, browser or wall-clock delays. Set
+`FELUCCA_STOCK=/path/to/FM-1.fwsc` to include digest-verified official V15 success cases; without
+that proprietary fixture those cases are explicitly skipped, while custom-loader and stock rejection
+cases still run.
 
 ## Engine catalogs and backup compatibility
 

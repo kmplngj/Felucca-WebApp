@@ -18,6 +18,7 @@ import { join } from "node:path";
 import vm from "node:vm";
 import { buildFeluccaPackage, logicalImage, productOf } from "./fm1pkg.js";
 import { Updater, pack7, unpack7 } from "./fm1ota.js";
+import { customImage } from "./test_ota_helpers.mjs";
 
 let failed = 0;
 const ok = (cond, what) => { console.log(`${what.padEnd(64)} ${cond ? "ok" : "FAIL"}`); if (!cond) failed++; };
@@ -2092,7 +2093,7 @@ class FakeFM1 {
 }
 
 async function updater() {
-  const image = Uint8Array.from({ length: 0x2000 }, (_, i) => (i * 7) & 0xFF);
+  const image = customImage();
   const dev = new FakeFM1(image);
   const steps = [];
   const got = await new Updater(dev.access).install(image, "FM-1_900", (k) => steps.push(k));
@@ -2102,7 +2103,7 @@ async function updater() {
   const dev2 = new FakeFM1(image, { unplugAfter: 3 });
   dev2.boot("ota-FM-1_900", "Felucca Update");
   const t0 = Date.now();
-  const done = await new Updater(dev2.access).resume(image);
+  const done = await new Updater(dev2.access).resume(image, null, "FM-1_900");
   ok(done === false && Date.now() - t0 < 6000, "fm1ota.js: unplugged during the write -> stops at once");
 
   const dev3 = new FakeFM1(image, { unplugAfter: 2 });

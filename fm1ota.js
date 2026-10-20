@@ -7,6 +7,8 @@
 // the loader reads the whole image and writes it. Both steps are "the device
 // asks, we answer": cmd 0x30 read requests on the logical image.
 
+import { updateLoaderFor } from "./fm1pkg.js";
+
 const HS_QUERY = [0xF0, 0x00, 0x32, 0x45, 0x00, 0x00, 0x00, 0x40, 0x7F, 0xF7];
 const UPGRADE = [0xF0, 0x22, 0x24, 0x35, 0x7F, 0xF7];
 const MAXDATA = 512;
@@ -14,7 +16,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const IS_OTA = (id) => /^ota-/i.test(id.model);
 
 // errors carry a code the pages translate: notfound, model, stopped, noloader, lost, noreturn,
-// mismatch (detail: the identity the device reports), badreq
+// mismatch (detail: the identity the device reports), badreq, badpkg, incompatible
 function fail(code, msg, detail = "") { const e = new Error(msg); e.code = code; e.detail = detail; return e; }
 
 export function pack7(data) {
@@ -61,7 +63,7 @@ function parseIdentity(pkt) {
   const d = unpack7(pkt.slice(1, -1));
   if (d.length !== 34 || d[0] !== 0 || d[1] !== 0x59 || d[2] !== 0x11) return null;
   const txt = String.fromCharCode(...d.slice(6, 33)).replace(/\0+$/, "");
-  const m = /^([^_]+)_(\d+)$/.exec(txt);
+  const m = /^(ota-FM-1|FM-1)_([A-Z0-9._-]{1,15})$/.exec(txt) || /^([^_]+)_(\d+)$/.exec(txt);
   return m ? { text: txt, model: m[1], version: parseInt(m[2], 10) } : null;
 }
 
@@ -170,12 +172,25 @@ export class Updater {
     }
   }
 
+  async expectedLoader(image, product) {
+    try { return await updateLoaderFor(image, product); }
+    catch (e) { throw fail("badpkg", e.message); }
+  }
+
+  requireLoader(ota, expected) {
+    if (ota.id.text !== expected) {
+      ota.link.close();
+      throw fail("incompatible", `Unsupported update loader ${ota.id.text}; this package requires ${expected}.`, ota.id.text);
+    }
+  }
+
   // full install: running firmware -> loader -> new firmware
   async install(image, product, onStep) {
+    const expected = await this.expectedLoader(image, product);
     const step = onStep || (() => {});
     const dev = await this.find((id) => !IS_OTA(id));
     if (!dev) throw fail("notfound", "FM-1 not found (USB cable, and no other app using it?)");
-    const [model] = product.split("_");
+    const model = "FM-1";
     if (dev.id.model !== model) { dev.link.close(); throw fail("model", `the device is ${dev.id.text}, the package is for ${product}`); }
     step("start", dev.id.text);
     dev.link.send(UPGRADE);
@@ -185,9 +200,10 @@ export class Updater {
     if (!s1.finished) throw fail(s1.lost ? "lost" : "stopped", `the device ${s1.lost ? "was disconnected" : "stopped"} after ${s1.served} requests: nothing was written`);
     step("loader");
     await sleep(3000);
-    const ota = await this.waitFor((id) => id.model === "ota-" + model, 30000);
+    const ota = await this.waitFor((id) => IS_OTA(id), 30000);
     if (!ota) throw fail("noloader", "the update loader did not appear. Replug the USB cable and press Install again: the device stays in update mode until it is finished.");
-    const s2 = await this.write(ota, image, step);
+    this.requireLoader(ota, expected);
+    const s2 = await this.write(ota, image, step, product);
     if (!s2.finished) throw fail(s2.lost ? "lost" : "stopped", `the loader ${s2.lost ? "was disconnected" : "stopped"} after ${s2.served} requests. Replug and press Install again to resume.`);
     step("reboot");
     await sleep(3000);
@@ -200,7 +216,9 @@ export class Updater {
   }
 
   // step 2 with the loader found by find()/waitFor()
-  async write(ota, image, step) {
+  async write(ota, image, step = () => {}, product) {
+    const expected = await this.expectedLoader(image, product);
+    this.requireLoader(ota, expected);
     ota.link.send(UPGRADE);
     await sleep(2000);
     const s2 = await this.serve(ota.link, image, 0xF0000000, 180000, (n) => step("write", n));
@@ -208,23 +226,22 @@ export class Updater {
     return s2;
   }
 
-  // resume: the device is already in update mode (loader) -> true when the write finished
-  async resume(image, onStep, product = null) {
-    const model = product && product.split("_")[0];
-    const ota = await this.find((id) => model ? id.model === "ota-" + model : IS_OTA(id));
+  // Resume only an evidenced loader/package pair; application rescue still uses install().
+  async resume(image, onStep, product) {
+    const expected = await this.expectedLoader(image, product);
+    const ota = await this.find((id) => IS_OTA(id));
     if (!ota) return false;
+    this.requireLoader(ota, expected);
     const step = onStep || (() => {});
-    const result = await this.write(ota, image, step);
+    const result = await this.write(ota, image, step, product);
     if (!result.finished) return false;
-    if (product) {
-      step("reboot");
-      await sleep(3000);
-      const back = await this.waitFor((id) => id.model === model, 40000);
-      if (!back) throw fail("noreturn", "The FM-1 did not return after resuming the write.");
-      back.link.close();
-      if (back.id.text !== product) throw fail("mismatch", "The FM-1 reports a different firmware after resuming.", back.id.text);
-      step("done", back.id.text);
-    }
+    step("reboot");
+    await sleep(3000);
+    const back = await this.waitFor((id) => !IS_OTA(id), 40000);
+    if (!back) throw fail("noreturn", "The FM-1 did not return after resuming the write.");
+    back.link.close();
+    if (back.id.text !== product) throw fail("mismatch", "The FM-1 reports a different firmware after resuming.", back.id.text);
+    step("done", back.id.text);
     return true;
   }
 }
