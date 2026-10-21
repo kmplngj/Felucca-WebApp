@@ -44,28 +44,47 @@ export const canMigrate = (o) => !!ruleFor(o.type) && o.size > 0 && (o.state ===
 /* the card's state, kept across redraws (projectScreen): the device's list, the files opened, the results */
 export function recoveryState() { return { list: null, files: [], bytes: new Map(), results: new Map(), dev: null }; }
 
+/* the cache key: a device object by what the listing says it is (type, copy, seq, size, crc), so a slot that changed
+   on the device is a different object; a file by its name */
+export const objectKey = (o) => (o.file ? `file:${o.file}:${o.type}` : `dev:${o.type}:${o.copy}:${o.seq}:${o.size}:${o.crc}`);
+
+/* one object's bytes: the file's own, the cached read of this very listing entry, or STORE_GET. A cached or fresh read
+   whose CRC is not the listed one is never used (the slot changed under the listing: list again) */
+export async function objectBytes(dev, st, o) {
+  if (o.bytes) return o;
+  const k = objectKey(o), fits = (g) => g && (o.crc == null || g.crc === o.crc);
+  const hit = st.bytes.get(k);
+  if (fits(hit)) return hit;
+  st.bytes.delete(k);
+  const got = await dev.storeObject(o.type);
+  if (got && !fits(got)) throw new Error("The stored object changed since it was listed. List again.");
+  if (got) st.bytes.set(k, got);
+  return got;
+}
+
+/* a new listing: what was read or converted for an entry that is no longer listed as it was is dropped */
+export function relist(st, list) {
+  const live = new Set(list.map(objectKey));
+  for (const m of [st.bytes, st.results]) for (const k of [...m.keys()]) if (k.startsWith("dev:") && !live.has(k)) m.delete(k);
+  st.list = list;
+}
+
 /* -> the STORED card, or null without the capability. dev: the Device; ui: the page; st: recoveryState(); run(fn, done):
    the screen's busy wrapper; busy; redraw() */
 export function recoveryCard(dev, ui, st, run, busy, redraw) {
   if (!dev || !(dev.rawCaps() & 1)) return null;
   if (st.dev !== dev) Object.assign(st, recoveryState(), { dev });
-  const key = (o) => (o.file ? `file:${o.file}:${o.type}` : `dev:${o.type}`);
+  const key = objectKey;
   const mismatch = targetMismatch(dev.info);
-
-  async function bytesOf(o) {
-    if (o.bytes) return o;
-    const k = key(o);
-    if (st.bytes.has(k)) return st.bytes.get(k);
-    const got = await dev.storeObject(o.type);
-    if (got) st.bytes.set(k, got);
-    return got;
-  }
+  /* the firmware an object came from: the connected one for the device's, the file's own for an imported file */
+  const srcInfo = (o) => (o.file ? (o.firmware ? { version: o.firmware } : null) : dev.info);
+  const bytesOf = (o) => objectBytes(dev, st, o);
   function original(o) {
     run(() => bytesOf(o), (got) => {
       if (!got) return;
       const name = originalName(got);
       ui.download(name, got.bytes, "application/octet-stream");
-      ui.download(name.replace(/\.bin$/, ".json"), rawObjectManifest(got, dev.info, name, typeName(got.type)));
+      ui.download(name.replace(/\.bin$/, ".json"), rawObjectManifest(got, srcInfo(got), name, typeName(got.type)));
       ui.say(tf("rawDidOriginal", typeName(got.type)));
     });
   }
@@ -84,7 +103,7 @@ export function recoveryCard(dev, ui, st, run, busy, redraw) {
   function saveMigrated(o, r) {
     const name = migratedName(o, r.kind === "project" ? "FUN10" : "UPB1");
     ui.download(name, r.bytes, "application/octet-stream");
-    ui.download(name.replace(/\.bin$/, ".json"), migratedManifest(o, r, dev.info, name));
+    ui.download(name.replace(/\.bin$/, ".json"), migratedManifest(o, r, srcInfo(o), name));
     ui.say(tf("rawDidMigrate", typeName(o.type)));
   }
 
@@ -164,7 +183,7 @@ export function recoveryCard(dev, ui, st, run, busy, redraw) {
     el("p", { class: "rawnote", text: t("rawNoUpload") }),
     mismatch ? el("p", { class: "rawnote loss", text: `${t("rawNoTarget")}: ${mismatch}` }) : null,
     el("div", { class: "acts wrap" },
-      el("button", { type: "button", class: "btn", disabled: busy, onclick: () => run(() => dev.storeList(), (l) => { if (l) { st.list = l; ui.say(tf("rawDidList", l.length)); } }) },
+      el("button", { type: "button", class: "btn", disabled: busy, onclick: () => run(() => dev.storeList(), (l) => { if (l) { relist(st, l); ui.say(tf("rawDidList", l.length)); } }) },
         ic("symbol_search"), t("rawList")),
       el("button", { type: "button", class: "btn", disabled: busy, onclick: () => run(
         () => dev.storeAll((n, total) => ui.progress(`STORE ${Math.round(n / Math.max(1, total) * 100)}%`)),

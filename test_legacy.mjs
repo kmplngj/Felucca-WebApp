@@ -20,7 +20,7 @@ import * as proto from "./app/src/proto.js";
 import { Device } from "./app/src/device.js";
 import { MigrationError, RULES, STORE_TYPES, TARGET, bankLegacyRecords, migrateObject, migrateProject, migrateUserBank, projectFormat,
   ruleFor, targetMismatch } from "./app/src/legacy.js";
-import { canMigrate, migratedManifest, migratedName, originalName, recoveryCard, recoveryState } from "./app/src/recovery.js";
+import { canMigrate, migratedManifest, migratedName, originalName, objectBytes, objectKey, recoveryCard, recoveryState, relist } from "./app/src/recovery.js";
 import { RAW_CMD, bkCrc, rawManifest, rawObjectManifest, readRawStore } from "./fm1backup.js";
 
 let failed = 0;
@@ -163,6 +163,42 @@ for (const [label, opt] of [["1.6 without INFO 59", { auto: false, catalog: true
   ok(good, "vectors through STORE_GET: the same bytes as the firmware's conversion");
   ok(objs.every((o, i) => same(o.bytes, i < pick.length ? B(pick[i].in) : B(vectors.presets[0].in))), "read only: the stored bytes are unchanged");
   d.close();
+}
+/* a slot that changes between two listings: the cached bytes of the first are never used for the second */
+{
+  const v = vectors.projects.filter((p) => p.out);
+  const objs = [{ type: 1, state: 2, copy: 0, seq: 3, bytes: B(v[0].in) }];
+  const m = proto.makeMockDevice({ auto: false, catalog: true, rawStore: objs }), d = new Device(m.access);
+  await d.open();
+  const sent = recorder(m), st = recoveryState(); st.dev = d;
+  const gets = () => sent.filter((c) => c === 83).length;
+  relist(st, await d.storeList());
+  const a = await objectBytes(d, st, st.list[0]);
+  const g1 = gets();
+  await objectBytes(d, st, st.list[0]);
+  ok(same(a.bytes, B(v[0].in)) && g1 > 0 && gets() === g1, "recovery: an unchanged listing reuses the bytes read (no new STORE_GET)");
+  st.results.set(objectKey(st.list[0]), { r: 1 });
+  objs[0] = { type: 1, state: 2, copy: 1, seq: 4, bytes: B(v[1].in) };
+  relist(st, await d.storeList());
+  ok(st.bytes.size === 0 && st.results.size === 0, "recovery: re-listing a changed slot drops its cached bytes and result");
+  const b = await objectBytes(d, st, st.list[0]);
+  ok(gets() > g1 && same(b.bytes, B(v[1].in)) && same(migrateObject(1, b.bytes).bytes, B(v[1].out)), "recovery: the changed slot is fetched anew; Original / Migrate use the new bytes");
+  /* the slot changes after the listing: the stale entry is refused, not used */
+  objs[0] = { type: 1, state: 2, copy: 1, seq: 5, bytes: B(v[2].in) };
+  st.bytes.clear();
+  let err = null; try { await objectBytes(d, st, st.list[0]); } catch (e) { err = e; }
+  ok(/List again/.test(err && err.message) , "recovery: bytes whose CRC is not the listed one are refused");
+  d.close();
+}
+/* an imported file's manifests name the file's firmware, not the connected device's */
+{
+  const v = vectors.projects.find((p) => p.out), bytes = B(v.in);
+  const o = { type: 1, state: "legacy", copy: 0, seq: 1, size: bytes.length, crc: bkCrc(bytes), bytes, file: "x.bin", firmware: "FELUCCA v1.4" };
+  const r = { kind: "project", ...migrateProject(bytes) }, dev = { version: "FELUCCA v1.6", pcount: 111 };
+  const mk = (info) => migratedManifest(o, r, info, "m.bin").source.firmware;
+  ok(mk(null) === "FELUCCA v1.4" && mk(dev) === "FELUCCA v1.6", "migrated manifest: a file's own firmware unless a device's info is passed");
+  const html = readFileSync(join(HERE, "app/src/recovery.js"), "utf8");
+  ok(/srcInfo\(o\), name\)/.test(html) && /rawObjectManifest\(got, srcInfo\(got\)/.test(html) && /o\.file \? \(o\.firmware/.test(html), "recovery: manifests of imported files take the file's firmware");
 }
 /* refusals: playing (rc 3), a bad request */
 {
