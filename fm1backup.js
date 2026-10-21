@@ -249,15 +249,20 @@ function rawCheck(rc) {
 export function rawManifest(a) {
   if (a[0] !== 1) throw new Error("Unsupported raw store protocol");
   rawCheck(a[1]);
-  if (a.length !== 3 + a[2] * RAW_REC) throw new Error("Incomplete raw store manifest");
+  if (!a[2] || a.length !== 3 + a[2] * RAW_REC) throw new Error("Incomplete raw store manifest");
+  const seen = new Set();
   return Array.from({ length: a[2] }, (_, i) => {
     const p = 3 + i * RAW_REC, state = RAW_STATES[a[p + 1]], size = bkR32(a, p + 3);
-    if (!state || (a[p + 2] > 1 && a[p + 2] !== 127) || size > 3840 || (state === "empty" ? size : a[p + 2] === 127))
+    const crc = bkR32(a, p + 8), seq = bkR32(a, p + 13), magic = bkR32(a, p + 18);
+    if (seen.has(a[p]) || !state || (a[p + 2] > 1 && a[p + 2] !== 127) || size > 3840 ||
+        (state === "empty" ? size || crc || magic || (a[p + 2] === 127 && seq) :
+          (state !== "damaged" && !size) || a[p + 2] === 127))
       throw new Error("Invalid raw store entry");
-    return { type: a[p], state, copy: a[p + 2] === 127 ? null : a[p + 2], size, crc: bkR32(a, p + 8), seq: bkR32(a, p + 13), magic: bkR32(a, p + 18) };
+    seen.add(a[p]);
+    return { type: a[p], state, copy: a[p + 2] === 127 ? null : a[p + 2], size, crc, seq, magic };
   });
 }
-const rawSame = (a, b) => a.type === b.type && a.state === b.state && a.copy === b.copy && a.size === b.size && a.crc === b.crc && a.seq === b.seq;
+const rawSame = (a, b) => a.type === b.type && a.state === b.state && a.copy === b.copy && a.size === b.size && a.crc === b.crc && a.seq === b.seq && a.magic === b.magic;
 async function rawBytes(request, o, onChunk = () => {}) {
   const bytes = new Uint8Array(o.size);
   for (let off = 0; off < o.size; off += BACKUP_CHUNK) {
@@ -307,10 +312,14 @@ export function rawObjectManifest(o, info, file, typeName = "") {
 // a felucca-store file (captureRawStore's) checked whole -> {firmware, objects: [{type, state, ..., bytes}]}
 export function readRawStore(file) {
   if (typeof file === "string") { try { file = JSON.parse(file); } catch (_) { throw new Error("Not a Felucca store export"); } }
-  if (!file || file.format !== "felucca-store" || file.version !== 1 || !Array.isArray(file.objects)) throw new Error("Not a Felucca store export");
+  if (!file || file.format !== "felucca-store" || file.version !== 1 || !Array.isArray(file.objects) || !file.objects.length || file.objects.length > 127) throw new Error("Not a Felucca store export");
+  const seen = new Set();
   const objects = file.objects.map((o) => {
-    if (!o || !Number.isInteger(o.type) || !RAW_STATES.includes(o.state) || !Number.isInteger(o.size) || o.size < 0 || o.size > 3840 ||
-        typeof o.data !== "string" || o.data.length !== 4 * Math.ceil(o.size / 3)) throw new Error("Invalid store object");
+    if (!o || !Number.isInteger(o.type) || o.type < 0 || o.type > 127 || seen.has(o.type) || !RAW_STATES.includes(o.state) || !Number.isInteger(o.size) || o.size < 0 || o.size > 3840 ||
+        ![null, 0, 1].includes(o.copy) || [o.crc, o.seq, o.magic].some((n) => !Number.isInteger(n) || n < 0 || n > 0xffffffff) ||
+        typeof o.data !== "string" || o.data.length !== 4 * Math.ceil(o.size / 3) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(o.data)) throw new Error("Invalid store object");
+    rawManifest([1, 0, 1, o.type, RAW_STATES.indexOf(o.state), o.copy ?? 127, ...bkU32(o.size), ...bkU32(o.crc), ...bkU32(o.seq), ...bkU32(o.magic)]);
+    seen.add(o.type);
     const bytes = Uint8Array.from(atob(o.data), (c) => c.charCodeAt(0));
     if (bytes.length !== o.size || (o.state !== "damaged" && o.size && bkCrc(bytes) !== o.crc)) throw new Error("Store object checksum mismatch");
     return { type: o.type, state: o.state, copy: o.copy ?? null, size: o.size, crc: o.crc, seq: o.seq, magic: o.magic, bytes };

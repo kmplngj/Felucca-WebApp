@@ -765,10 +765,15 @@ int main(int argc, char **argv)
         tables(argc > 2 ? argv[2] : "unknown");
     else if (argc > 1 && !strcmp(argv[1], "vectors"))
         vectors();
+    else if (argc > 1 && !strcmp(argv[1], "classify")) {
+        uint8_t b[3840];
+        uint32_t n = (uint32_t)fread(b, 1, sizeof b, stdin);
+        printf("%u\n", ed_raw_kind(OBJ_PROJECT0, b, n));
+    }
     else if (argc > 3 && !strcmp(argv[1], "corpus"))
         corpus((uint32_t)strtoul(argv[2], 0, 0), (uint32_t)strtoul(argv[3], 0, 0));
     else {
-        fprintf(stderr, "usage: gen_legacy tables [REVISION] | vectors | corpus SEED COUNT\n");
+        fprintf(stderr, "usage: gen_legacy tables [REVISION] | vectors | classify < project.bin | corpus SEED COUNT\n");
         return 2;
     }
     return 0;

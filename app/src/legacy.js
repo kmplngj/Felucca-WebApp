@@ -147,8 +147,14 @@ export function projectFormat(b) {
   const m = u32(b, 0), w = u32(b, 4), s = u32(b, n - 4);
   for (let f = 10; f >= 1; f--) {
     if (n === SIZE[f] && m === FUN[f] && w === n && s === fnv1a(b, n - 4)) {
-      if (f < 10) return { fmt: f, np: f >= 7 ? b[66] : f >= 4 ? NP_V4 : f === 3 ? NP_V3 : NP_V2, state: "legacy", size: n };
       const np = b[66];
+      if (f >= 7) {
+        const end = n - 4 - NAME_LEN - (f === 7 ? 0 : T.NTRK * T.FM6_PACKED);
+        const tail = f === 10 ? 84 + 388 : 36 + 260;
+        if (np < 8 || np > T.P_COUNT || 68 + T.NTRK * (np + 2 + T.NSTEP * 9) + tail > end)
+          return { fmt: f, np, size: n, state: "unknown" };
+      }
+      if (f < 10) return { fmt: f, np: f >= 7 ? b[66] : f >= 4 ? NP_V4 : f === 3 ? NP_V3 : NP_V2, state: "legacy", size: n };
       return { fmt: 10, np, size: n, state: np === T.P_COUNT ? "current" : np >= 8 && np < T.P_COUNT ? "legacy" : "unknown" };
     }
   }

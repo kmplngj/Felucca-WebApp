@@ -44,15 +44,15 @@ export const canMigrate = (o) => !!ruleFor(o.type) && o.size > 0 && (o.state ===
 /* the card's state, kept across redraws (projectScreen): the device's list, the files opened, the results */
 export function recoveryState() { return { list: null, files: [], bytes: new Map(), results: new Map(), dev: null }; }
 
-/* the cache key: a device object by what the listing says it is (type, copy, seq, size, crc), so a slot that changed
-   on the device is a different object; a file by its name */
-export const objectKey = (o) => (o.file ? `file:${o.file}:${o.type}` : `dev:${o.type}:${o.copy}:${o.seq}:${o.size}:${o.crc}`);
+/* the cache key: a device object by what the listing says it is (type, copy, seq, size, crc, state, magic), so a slot that changed
+   on the device is a different object; files include their source name, firmware and object identity */
+export const objectKey = (o) => `${o.file ? "file" : "dev"}:${JSON.stringify([o.file || "", o.file ? o.firmware || "" : "", o.type, o.state, o.copy, o.seq, o.size, o.crc, o.magic])}`;
 
 /* one object's bytes: the file's own, the cached read of this very listing entry, or STORE_GET. A cached or fresh read
    whose CRC is not the listed one is never used (the slot changed under the listing: list again) */
 export async function objectBytes(dev, st, o) {
   if (o.bytes) return o;
-  const k = objectKey(o), fits = (g) => g && (o.crc == null || g.crc === o.crc);
+  const k = objectKey(o), fits = (g) => g && objectKey(g) === k;
   const hit = st.bytes.get(k);
   if (fits(hit)) return hit;
   st.bytes.delete(k);

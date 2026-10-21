@@ -16,12 +16,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
+import { pathToFileURL } from "node:url";
 import * as proto from "./app/src/proto.js";
 import { Device } from "./app/src/device.js";
+import { T } from "./app/src/legacy_tables.js";
 import { MigrationError, RULES, STORE_TYPES, TARGET, bankLegacyRecords, migrateObject, migrateProject, migrateUserBank, projectFormat,
-  ruleFor, targetMismatch } from "./app/src/legacy.js";
+  ruleFor, targetMismatch, fnv1a } from "./app/src/legacy.js";
 import { canMigrate, migratedManifest, migratedName, originalName, objectBytes, objectKey, recoveryCard, recoveryState, relist } from "./app/src/recovery.js";
-import { RAW_CMD, bkCrc, rawManifest, rawObjectManifest, readRawStore } from "./fm1backup.js";
+import { RAW_CMD, bkU32, bkPack, captureRawObject, captureRawStore, bkCrc, rawManifest, rawObjectManifest, readRawStore } from "./fm1backup.js";
 
 let failed = 0;
 const ok = (cond, what) => { console.log(`${what.padEnd(72)} ${cond ? "ok" : "FAIL"}`); if (!cond) failed++; };
@@ -75,6 +77,41 @@ checkVectors(vectors, "vectors");
   ok(RULES.some((x) => !x.ported) && RULES.filter((x) => x.ported).length >= 5 && STORE_TYPES[9] === "AUTOSAVE", "rules: what is ported and what is not");
   ok(targetMismatch({ pcount: 111 }) === "" && /104/.test(targetMismatch({ pcount: 104 })), "target: only firmware of the same schema gets MIGRATE");
 }
+
+/* Current raw-reader contract, including empty tombstones and changed repeated metadata. */
+const rawWire = (objects) => [1, 0, objects.length, ...objects.flatMap((o) => [o.type, STATES.indexOf(o.state), o.copy ?? 127,
+  ...bkU32(o.size), ...bkU32(o.crc), ...bkU32(o.seq), ...bkU32(o.magic)])];
+const rawSample = { type: 1, state: "current", copy: 0, size: 4, crc: bkCrc(Uint8Array.of(1, 2, 3, 4)), seq: 1, magic: 0x04030201 };
+const invalidManifests = [[1, 0, 0], rawWire([rawSample, rawSample]), ...[
+  { state: "empty", size: 0, crc: 1, magic: 0 }, { state: "empty", size: 0, crc: 0, magic: 1 },
+  { state: "empty", copy: null, size: 0, crc: 0, magic: 0 }, { state: "current", size: 0 }, { copy: null },
+].map((change) => rawWire([{ ...rawSample, ...change }]))];
+for (const w of invalidManifests) assert.throws(() => rawManifest(w));
+for (const copy of [null, 0, 1]) {
+  const empty = { ...rawSample, state: "empty", size: 0, crc: 0, magic: 0, copy, seq: copy === null ? 0 : 7 };
+  assert.deepEqual(rawManifest(rawWire([empty])), [empty]);
+}
+for (const capture of [(rq) => captureRawObject(rq, 1), (rq) => captureRawStore(rq, "test")]) {
+  let lists = 0;
+  await assert.rejects(() => capture(async ([cmd]) => cmd === RAW_CMD.LIST
+    ? rawWire([{ ...rawSample, magic: rawSample.magic + (lists++ ? 1 : 0) }])
+    : [1, 0, ...bkU32(0), 4, 0, ...bkPack(Uint8Array.of(1, 2, 3, 4))]), /changed/);
+}
+const rawFile = { format: "felucca-store", version: 1, objects: [{ ...rawSample, data: "AQIDBA==" }] };
+assert.equal(readRawStore(rawFile).objects.length, 1);
+for (const file of [{ ...rawFile, objects: [] }, { ...rawFile, objects: [...rawFile.objects, ...rawFile.objects] },
+  ...[{ crc: -1 }, { seq: 0x100000000 }, { magic: null }, { copy: 3 }, { type: -1 }, { data: "AQID!A==" }]
+    .map((bad) => ({ ...rawFile, objects: [{ ...rawFile.objects[0], ...bad }] }))]) assert.throws(() => readRawStore(file));
+for (const fmt of [7, 8, 9, 10]) {
+  const p = vectors.projects.find((p) => projectFormat(B(p.in)).fmt === fmt && p.out);
+  assert(p);
+  for (const np of [0, 7, 112, 127]) {
+    const b = B(p.in); b[66] = np;
+    new DataView(b.buffer).setUint32(b.length - 4, fnv1a(b, b.length - 4), true);
+    assert.equal(projectFormat(b).state, "unknown", `FUN${fmt} count ${np}`);
+  }
+}
+ok(true, "raw schema: duplicate/empty metadata, count limits, repeated magic and malformed files refused");
 
 /* ---------------------------------------------------------- INFO 59 01 --- */
 {
@@ -190,6 +227,19 @@ for (const [label, opt] of [["1.6 without INFO 59", { auto: false, catalog: true
   ok(/List again/.test(err && err.message) , "recovery: bytes whose CRC is not the listed one are refused");
   d.close();
 }
+/* Reopening same-day filenames with different content keeps each displayed result tied to its source. */
+{
+  const a = { ...rawSample, file: "Felucca-store.json" }, b = { ...a, crc: a.crc + 1, seq: a.seq + 1 };
+  assert.notEqual(objectKey(a), objectKey(b));
+  assert.notEqual(objectKey(a), objectKey({ ...a, firmware: "different source build" }), "same bytes from different firmware retain their own provenance");
+  const st = recoveryState(); st.files.push(a, b);
+  st.results.set(objectKey(a), { o: a }); st.results.set(objectKey(b), { o: b });
+  assert.equal(st.results.get(objectKey(st.files[0])).o, a);
+  assert.equal(st.results.get(objectKey(st.files[1])).o, b);
+  const dev = { storeObject: async () => ({ ...rawSample, seq: rawSample.seq + 1 }) };
+  await assert.rejects(() => objectBytes(dev, recoveryState(), rawSample), /List again/);
+  ok(true, "recovery: same-name imports keep distinct results; same-CRC changed metadata needs a fresh list");
+}
 /* an imported file's manifests name the file's firmware, not the connected device's */
 {
   const v = vectors.projects.find((p) => p.out), bytes = B(v.in);
@@ -210,7 +260,7 @@ for (const [label, opt] of [["1.6 without INFO 59", { auto: false, catalog: true
   d.close();
   assert.throws(() => rawManifest([2, 0, 0]), /protocol/);
   assert.throws(() => rawManifest([1, 0, 1]), /Incomplete/);
-  assert.throws(() => readRawStore('{"format":"felucca-store","version":1,"objects":[{"type":1,"state":"current","size":3,"crc":0,"data":"AAAA"}]}'), /checksum/);
+  assert.throws(() => readRawStore({ ...rawFile, objects: [{ ...rawFile.objects[0], crc: 0 }] }), /checksum/);
   ok(true, "a malformed manifest or file is refused");
 }
 /* the page's code: STORED only reads (no write the Device has is called from recovery.js or legacy.js) */
@@ -235,6 +285,32 @@ if (fw) {
     const big = { encoding: "utf8", maxBuffer: 1 << 28 };
     ok(execFileSync(exe, ["tables", rev], big) === tables, `firmware: the tables are the checkout's (${rev})`);
     ok(execFileSync(exe, ["vectors"], big) === readFileSync(join(HERE, "legacy_vectors.json"), "utf8"), "firmware: the vectors are the checkout's");
+    // Consume the current firmware's actual standard INFO catalog (this host harness has flash disabled).
+    const infoSource = join(temp, "info.c"), infoExe = join(temp, "info");
+    const host = readFileSync(join(fw, "tests/engid_test.c"), "utf8").replace("int main(void)", "int engid_regression_main(void)");
+    writeFileSync(infoSource, host + `
+int main(void) { uint8_t a[1]={0}; reset(); uint32_t n=request(ED_INFO,a,0); putchar('[');
+for(uint32_t k=5;k<n-1;k++) printf("%s%u",k==5?"":",",host_wire[k]); puts("]"); return 0; }
+`);
+    execFileSync(process.env.CC || "cc", ["-O1", "-w", "-I" + join(fw, "build/gen"), "-I" + join(fw, "firmware/src"), "-I" + join(fw, "tests"), "-o", infoExe, infoSource, "-lm"], { stdio: "pipe" });
+    const currentInfo = proto.parse[proto.CMD.INFO](JSON.parse(execFileSync(infoExe, big)));
+    assert.equal(currentInfo.nengines, T.NENGINES);
+    assert.equal(targetMismatch(currentInfo), "", "current standard native catalog matches migration target");
+    assert.equal(currentInfo.rawStoreCaps, 0, "native INFO host harness has flash disabled");
+    assert.notEqual(targetMismatch({ ...currentInfo, pcount: currentInfo.pcount + 1 }), "");
+    const omitted = structuredClone(currentInfo); omitted.engineCatalog.bitmap[0] &= ~1;
+    assert.notEqual(targetMismatch(omitted), "", "different profiles remain refused");
+    const reference = await import(pathToFileURL(join(fw, "web/fm1backup.js")));
+    for (const w of invalidManifests) assert.throws(() => reference.rawManifest(w));
+    for (const fmt of [7, 8, 9, 10]) {
+      const p = vectors.projects.find((p) => projectFormat(B(p.in)).fmt === fmt && p.out);
+      for (const np of [0, 7, 112, 127]) {
+        const b = B(p.in); b[66] = np;
+        new DataView(b.buffer).setUint32(b.length - 4, fnv1a(b, b.length - 4), true);
+        assert.equal(projectFormat(b).state, STATES[Number(execFileSync(exe, ["classify"], { input: b, encoding: "utf8" }).trim())]);
+      }
+    }
+    ok(true, `firmware: current INFO catalog (${currentInfo.nengines} slots), raw reference and malformed schema counts agree`);
     const [seed, count] = (process.env.FELUCCA_CORPUS || "1:240").split(":").map(Number);
     const corpus = join(temp, "corpus.json");
     writeFileSync(corpus, execFileSync(exe, ["corpus", String(seed), String(count)], big));
