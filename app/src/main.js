@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
 //
 // The page: the frame (header, tracks, flash, places, help bar, messages, dialogs), the connection and its
-// events, and the screens. ?mock=1 drives everything against the simulated device (&legacy=1: no live sync).
+// events, and the screens. ?mock=1 drives everything against the simulated device (&legacy=1: no live sync; &raw=1: the
+// raw store export, PROJECT > STORED).
 
 import { engineAvailable, catalogLabel, makeMockDevice } from "./proto.js";
 import { Device } from "./device.js";
@@ -220,7 +221,8 @@ async function connect() {
   $("#connect").disabled = true;
   try {
     if (!access) {
-      if (MOCK) access = makeMockDevice({ legacy: QS.get("legacy") === "1", catalog: QS.get("catalog") === "1", test14: QS.get("test14") === "1", omit: QS.has("omit") ? Number(QS.get("omit")) : undefined }).access;
+      if (MOCK) access = makeMockDevice({ legacy: QS.get("legacy") === "1", catalog: QS.get("catalog") === "1" || QS.get("raw") === "1", test14: QS.get("test14") === "1", omit: QS.has("omit") ? Number(QS.get("omit")) : undefined,
+        rawStore: QS.get("raw") === "1" }).access;   /* (&raw=1: the raw store export of #456, with demo legacy objects) */
       else if (!navigator.requestMIDIAccess) { sayK("nomidi"); return; }
       else { try { access = await navigator.requestMIDIAccess({ sysex: true }); } catch { sayK("denied"); return; } }
       access.onstatechange = onPortState;

@@ -2,12 +2,14 @@
 // Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
 //
 // PROJECT: the device's four projects A..D (load, save), the song chain (rows of a project and its repeats, PLAY /
-// STOP, where it is), and the full backup to a file and back.
+// STOP, where it is), the full backup to a file and back, and (INFO 59 01) the stored objects as they are on flash
+// with the optional migration of legacy ones to a file (recovery.js).
 
 import { settingsFormat } from "../../fm1backup.js";
 import { F } from "./proto.js";
 import { el, ic } from "./dom.js";
 import { card, paramRow } from "./parts.js";
+import { recoveryCard, recoveryState } from "./recovery.js";
 import { t, tf } from "./text.js";
 
 const L = (k) => String.fromCharCode(65 + k);       /* the device names projects A..D */
@@ -15,6 +17,7 @@ const MAX_BACKUP = 600000;
 
 export function projectScreen(root, ui) {
   let dev = null, busy = false;
+  const stored = recoveryState();                      /* STORED (#456 raw store export): its list, files and results */
   const restoreInput = el("input", { type: "file", accept: ".json,application/json", hidden: true });
   restoreInput.addEventListener("change", async () => {
     const f = restoreInput.files[0];
@@ -150,7 +153,7 @@ export function projectScreen(root, ui) {
   function draw() {
     if (!dev) { root.replaceChildren(); return; }
     if (root.contains(document.activeElement) && document.activeElement.tagName === "SELECT") return;
-    root.replaceChildren(el("div", { class: "grid" }, ...[projects(), song(), backup()].filter(Boolean)));
+    root.replaceChildren(el("div", { class: "grid" }, ...[projects(), song(), backup(), recoveryCard(dev, ui, stored, run, busy, draw)].filter(Boolean)));
   }
   return {
     show(device) { dev = device && device.loaded ? device : null; draw(); },

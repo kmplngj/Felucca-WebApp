@@ -6,7 +6,7 @@
 // and the edits. No DOM: the page listens (on) and calls; the tests drive it against the mock device.
 // The behaviour is editor.html's (connect, load, onPush, keepAlive, the 400 ms poll, selfLoad), moved here.
 
-import { captureBackup, captureObject, conditionalProjects, projectFile, putObject, readBackup, readProject, restoreBackup, assertBackupCompatible } from "../../fm1backup.js";
+import { captureBackup, captureObject, conditionalProjects, projectFile, putObject, readBackup, readProject, restoreBackup, assertBackupCompatible, RAW_CMD, rawManifest, captureRawObject, captureRawStore } from "../../fm1backup.js";
 import { CMD, F, FLASH_OPT, engineAvailable, catalogLabel, FM6, fm6Bank, midiLearn, Link, parseMotionAll, P_CHORD, SMP, auditionPatch, bank, capturePatch, fromDigital, mixer, parse, paramKeys, readDeviceMenu, readDevicePreferences, req, reservedFm4, startWatch, upName } from "./proto.js";
 
 export const isFelucca = (p) => /felucca/i.test(p.name || "") && p.state !== "disconnected";
@@ -513,6 +513,24 @@ export class Device {
       this.emit("projects", this.slotUsed);
       return true;
     });
+  }
+  /* #456 raw store export (INFO 59 01 bit 0: STORE_LIST / STORE_GET): every stored object as flash holds it, also what
+     this firmware cannot load. Read only: these send nothing that writes, and nothing is converted or uploaded here */
+  rawCaps() { return this.info ? this.info.rawStoreCaps | 0 : 0; }
+  /* -> [{type, state, copy, size, crc, seq, magic}] */
+  storeList() {
+    if (!(this.rawCaps() & 1)) return Promise.resolve(undefined);
+    return this.op(async () => rawManifest(await this.rq([RAW_CMD.LIST, []], { timeout: 3000, retries: 0 })));
+  }
+  /* one object's bytes exactly as stored -> {type, state, ..., bytes} */
+  storeObject(type) {
+    if (!(this.rawCaps() & 1)) return Promise.resolve(undefined);
+    return this.op(() => captureRawObject((r, o) => this.rq(r, o), type));
+  }
+  /* every object -> the felucca-store file (Felucca web/fm1backup.js captureRawStore) */
+  storeAll(onProgress) {
+    if (!(this.rawCaps() & 1)) return Promise.resolve(undefined);
+    return this.op(() => captureRawStore((r, o) => this.rq(r, o), this.info.version, onProgress));
   }
   /* 1.5.5: the backup's projects this device cannot open (a step condition; no INFO 4B 01 here) -> their ids */
   backupConditional(archive) { return this.info.cond ? [] : conditionalProjects(archive); }

@@ -18,6 +18,7 @@ node test_app.mjs           # the new editor: device layer, build, tokens, words
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
 node test_backup.mjs        # the full backup
 node test_catalog.mjs       # catalogs, stable ids and settings compatibility
+node test_legacy.mjs        # stored-object export (STORE_LIST / STORE_GET) and legacy migration vectors (FELUCCA_ROOT: regenerate from the firmware)
 ```
 
 Checks that compare with the firmware use files from a Felucca checkout, passed in by environment variables:

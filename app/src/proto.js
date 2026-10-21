@@ -50,7 +50,8 @@ const CMD = { INFO: 1, GET: 2, SET: 3, DUMP: 4, DESC: 5, STEP_GET: 6, STEP_SET: 
   UI_STATE: 34, UI_SET: 35, UI_PALETTES: 36, FAV_GET: 37, FAV_SET: 38,
   MOTION: 64, BACKUP_LIST: 65, BACKUP_GET: 66, BACKUP_PUT: 67,
   FM6_GET: 68, FM6_PUT: 69, FM6_LIST: 70, FM6_ERASE: 71, MENU_DESC: 72, MENU_SET: 73,
-  FM6B_BEGIN: 74, FM6B_WRITE: 75, FM6B_END: 76, FM6B_LIST: 77, LEARN_GET: 78, LEARN_SET: 79, PALETTE_GET: 80, PALETTE_SET: 81 };
+  FM6B_BEGIN: 74, FM6B_WRITE: 75, FM6B_END: 76, FM6B_LIST: 77, LEARN_GET: 78, LEARN_SET: 79, PALETTE_GET: 80, PALETTE_SET: 81,
+  STORE_LIST: 82, STORE_GET: 83 };
 /* frames the device sends on its own (while WATCH is on); never replies */
 const PUSH = new Set([CMD.CHANGED, CMD.RELOAD, CMD.STEP_CHANGED, CMD.TRACK_CHANGED]);
 /* user preset bank: name 1..12 printable ASCII, a 16-step pattern of (note, flags 1 acc 2 slide 4 tie) */
@@ -140,9 +141,10 @@ function readEngineCatalog(trailer, info) {
   info.engineCatalog = null;
   info.userEngine = info.nengines;
   info.backupExtraCaps = 0;
+  info.rawStoreCaps = 0;
   if (trailer.length === 1 && trailer[0] !== 0x49 && trailer[0] !== 0x58) return; // historical untagged PR flag
   const lengths = { 0x55: 1, 0x4d: 2, 0x42: 1, 0x46: 2, 0x53: 1, 0x50: 1, 0x4E: 1,
-    0x52: 1, 0x4C: 1, 0x41: 2, 0x54: 1, 0x57: 1, 0x56: 1, 0x43: 1, 0x4B: 1, 0x45: 1, 0x58: 1 };
+    0x52: 1, 0x4C: 1, 0x41: 2, 0x54: 1, 0x57: 1, 0x56: 1, 0x43: 1, 0x4B: 1, 0x45: 1, 0x58: 1, 0x59: 1 };
   for (let q = trailer[0] === 16 ? 1 : 0; q < trailer.length;) {
     const tag = trailer[q];
     if (tag === 0x49) {
@@ -162,6 +164,7 @@ function readEngineCatalog(trailer, info) {
       throw new Error("Invalid or unsupported INFO capability block; update the editor before connecting");
     }
     if (tag === 0x58) info.backupExtraCaps = trailer[q + 2] & 7;
+    if (tag === 0x59) info.rawStoreCaps = trailer[q + 2] & 1;   /* #456: bit 0 STORE_LIST / STORE_GET (82, 83), read only */
     q += 2 + n;
   }
 }
@@ -524,6 +527,7 @@ function replyMatches(cmd, args, a) {
     case CMD.MOTION: return a[0] === args[0];
     case CMD.BACKUP_GET: return a[0] === args[0] && a.slice(2, 7).every((v, i) => v === args[i + 1]);
     case CMD.BACKUP_PUT: return a[0] === args[0] && a[1] === args[1];
+    case CMD.STORE_GET: return a[0] === args[0] && a.slice(2, 7).every((v, i) => v === args[i + 1]);
     case CMD.UI_SET: return a[1] === args[0] && a[2] === args[1];
     case CMD.FAV_GET: case CMD.FAV_SET:
       return ![0, 3, 4].includes(a[0]) || (a[1] === args[0] && a[2] === args[1] && a[3] === args[2] && a[4] === args[3]);
@@ -2145,6 +2149,7 @@ function makeMockDevice(opt = {}) {
           [0x49, 1, 64, 127].forEach(b);
           for (let i = 0; i < 10; i++) { let bits = 0; for (let k = 0; k < 7; k++) if (plays(7 * i + k)) bits |= 1 << k; b(bits); }
           [0x58, 1, opt.backupExtraCaps || 0].forEach(b);
+          if (opt.rawStore) [0x59, 1, 1].forEach(b);   /* #456: the raw store export (82, 83) */
         }
         break;
       case CMD.GET: case CMD.SET: {
@@ -2417,6 +2422,26 @@ function makeMockDevice(opt = {}) {
         b(a[0]); b(rc);
         break;
       }
+      /* #456 raw store export: every storage object as stored, read only (opt.rawStore: true, or [{type, state, copy,
+         seq, bytes, crc}]); rc 3 while playing */
+      case CMD.STORE_LIST: {
+        if (!opt.rawStore || !catalogOn) return null;
+        const rc = a.length ? 1 : st.chainPlaying || opt.rawPlaying ? 3 : 0, objs = rawStore();
+        b(1); b(rc); b(rc ? 0 : objs.length);
+        if (!rc) for (const o of objs) {
+          b(o.type); b(o.state); b(o.copy ?? 127); u32(o.bytes.length); u32(o.bytes.length ? o.crc ?? crc32(o.bytes) : 0);
+          u32(o.seq || 0); u32(o.bytes.length >= 4 ? (o.bytes[0] | o.bytes[1] << 8 | o.bytes[2] << 16 | o.bytes[3] << 24) >>> 0 : 0);
+        }
+        break;
+      }
+      case CMD.STORE_GET: {
+        if (!opt.rawStore || !catalogOn) return null;
+        const o = a.length === 8 ? rawStore().find((x) => x.type === a[0]) : null, off = a.length === 8 ? bkR(a, 1) : 0, n = a.length === 8 ? a[6] | a[7] << 7 : 0;
+        const rc = a.length !== 8 || !n || n > 256 ? 1 : st.chainPlaying || opt.rawPlaying ? 3 : !o || !o.bytes.length || off + n > o.bytes.length ? 1 : 0;
+        b(a.length ? a[0] : 127); b(rc); u32(off); b(rc ? 0 : n & 127); b(rc ? 0 : n >> 7);
+        if (!rc) pack7(o.bytes.subarray(off, off + n)).forEach(b);
+        break;
+      }
       /* full backup (EDITOR_PROTOCOL.md v7): LIST takes a snapshot, GET reads it, PUT begin / data / commit / abort */
       case CMD.BACKUP_LIST: {
         if (opt.noBackup || !st.uiCaps) return null;
@@ -2495,6 +2520,41 @@ function makeMockDevice(opt = {}) {
     return had || (st.bank.some((x) => x && x.fm6) ? fill(3728, 9) : new Uint8Array(0));
   }
   const bkR = (x, o) => (x[o] | x[o + 1] << 7 | x[o + 2] << 14 | x[o + 3] << 21 | (x[o + 4] & 15) << 28) >>> 0;
+  /* the raw store's demo objects (opt.rawStore true): project A a FUN1 of 0.5 beta (track 1 the selected track's sound
+     and steps), user bank 1 a version 2 record of 53 parameters, the retired FM6 bank, a damaged slot and a later
+     autosave; the rest empty. Each a valid record of its format (magic, size, FNV-1a last), as old firmware wrote them */
+  let rawDemo = null;
+  function rawStore() {
+    if (Array.isArray(opt.rawStore)) return opt.rawStore;
+    if (rawDemo) return rawDemo;
+    const fnv = (x, n) => { let h = 0x811C9DC5; for (let i = 0; i < n; i++) h = Math.imul(h ^ x[i], 16777619) >>> 0; return h; };
+    const w32 = (x, o, v) => { for (let i = 0; i < 4; i++) x[o + i] = v >>> (8 * i) & 255; };
+    const w16 = (x, o, v) => { x[o] = v & 255; x[o + 1] = v >> 8 & 255; };
+    const t = st.tracks[0], f1 = new Uint8Array(688);
+    w32(f1, 0, 0x46554E31); w32(f1, 4, 688);
+    st.g.forEach((v, i) => w16(f1, 8 + 2 * i, v));
+    for (let i = 0; i < 53; i++) w16(f1, 62 + 2 * i, t.p[i < 45 ? i : P_E0 + i - 45]);
+    f1[168] = t.engine; f1[169] = 0;
+    t.step.forEach((x, k) => { const o = 170 + 8 * k; x.notes.forEach((n, j) => { f1[o + j] = n; }); f1[o + 4] = x.n; f1[o + 5] = x.time; f1[o + 6] = x.flags & 3; f1[o + 7] = x.vel; });
+    for (let k = 0; k < 4; k++) { const o = 170 + 8 * k * 4; f1[o] = 48 + k * 3; f1[o + 4] = 1; f1[o + 5] = 0; f1[o + 7] = 100; }
+    w32(f1, 684, fnv(f1, 684));
+    const bank = new Uint8Array(3080), r = 8;
+    w32(bank, 0, 0x31425055); bank[4] = 192; bank[6] = 16;
+    bank[r] = 0xA5; bank[r + 1] = 2; bank[r + 2] = 0; bank[r + 3] = 53;
+    [..."OLD BASS"].forEach((c, i) => { bank[r + 4 + i] = c.charCodeAt(0); });
+    for (let i = 0; i < 53; i++) w16(bank, r + 16 + 2 * i, i < 45 ? TP[i].def : 0);
+    for (let i = 0; i < 16; i++) { bank[r + 160 + i] = i % 4 ? 0 : 36 + i; bank[r + 176 + i] = i % 8 ? 0 : 1; }
+    const fm6b = new Uint8Array(3472); w32(fm6b, 0, 0x42364D46);
+    const later = fill(3840, 9); w32(later, 0, 0x46554E41); w32(later, 4, 3840); later[66] = 120; w32(later, 3836, fnv(later, 3836));
+    const set = fill(572, 2); w32(set, 0, 0x50455234);
+    rawDemo = [{ type: 0, state: 1, copy: 0, seq: 12, bytes: set }, { type: 1, state: 2, copy: 1, seq: 3, bytes: f1 },
+      { type: 2, state: 4, copy: 0, seq: 5, bytes: fill(3388, 7), crc: 0x1234567 }, { type: 3, state: 0, copy: null, seq: 0, bytes: new Uint8Array(0) },
+      { type: 4, state: 0, copy: null, seq: 0, bytes: new Uint8Array(0) }, { type: 5, state: 1, copy: 0, seq: 8, bytes: bank },
+      { type: 6, state: 0, copy: null, seq: 0, bytes: new Uint8Array(0) }, { type: 7, state: 2, copy: 0, seq: 2, bytes: fm6b },
+      { type: 8, state: 0, copy: null, seq: 0, bytes: new Uint8Array(0) }, { type: 9, state: 3, copy: 1, seq: 40, bytes: later },
+      { type: 32, state: 0, copy: null, seq: 0, bytes: new Uint8Array(0) }];
+    return rawDemo;
+  }
 
   /* a WebMIDI-like access object: one input and one output named "Felucca" */
   const input = { id: "mock-in", name: "Felucca", type: "input", state: "connected", onmidimessage: null };
