@@ -247,7 +247,7 @@ async function connect() {
     d.on("samples", () => samples.refresh());
     d.on("projects", () => project.refresh());
     d.on("song", () => project.refresh());
-    d.on("error", (e) => (["noreply", "backupNewer"].includes(e.message) ? sayK(e.message, "", "warn") : sayK("error", e.message)));
+    d.on("error", (e) => (["noreply", "backupNewer", "condProjectNo"].includes(e.message) ? sayK(e.message, "", "warn") : sayK("error", e.message)));
     d.on("menu", (items) => settings.menu(items));
     d.on("learn", () => { if (d.loaded) settings.show(d); });
     d.on("palette", () => { if (d.loaded) settings.show(d); });                  /* (1.6: CUSTOM palette read as settings open) */

@@ -491,7 +491,7 @@ export class Device {
   /* (and a 1.5 project, FUN10 of 111 parameters, byte 66, on 1.2 .. 1.4: more parameters than this device has) */
   backupTooNew(archive) {
     const proj = (archive.objects || []).filter((o) => o.id <= 5 && o.id !== 1 && o.size === 3840);
-    return (!this.info.motionCap && proj.length > 0) || proj.some((o) => o.bytes && String.fromCharCode(...o.bytes.slice(0, 4)) === "FUNA" && o.bytes[66] > this.info.pcount);
+    return (!this.info.motionCap && proj.length > 0) || proj.some((o) => o.bytes && o.bytes.length === 3840 && new DataView(o.bytes.buffer, o.bytes.byteOffset, o.bytes.byteLength).getUint32(0, true) === 0x46554e41 && o.bytes[66] > this.info.pcount);
   }
   /* a single project (Discussion #70): slot k (0..3 = A..D, object 2 + k) to a file, a file to slot k; the backup's
      object as it is (BACKUP_GET / BACKUP_PUT: INFO 42 bit 0 / bit 1) */
@@ -536,8 +536,9 @@ export class Device {
   backupConditional(archive) { return this.info.cond ? [] : conditionalProjects(archive); }
   /* skip: object ids left out (they stay as they are on the device) */
   backupRestore(archive, onProgress, skip = []) {
-    try { assertBackupCompatible(archive, this.info); } catch (e) { this.emit("error", e); return Promise.resolve(false); }
+    try { archive = readBackup(archive); assertBackupCompatible(archive, this.info); } catch (e) { this.emit("error", e); return Promise.resolve(false); }
     if (this.backupTooNew(archive)) { this.emit("error", new Error("backupNewer")); return Promise.resolve(false); }
+    if (this.backupConditional(archive).some((id) => !skip.includes(id))) { this.emit("error", new Error("condProjectNo")); return Promise.resolve(false); }
     return this.op(async () => {
       await restoreBackup((r, o) => this.rq(r, o), archive, onProgress, { skip, info: this.info });
       await this.load();

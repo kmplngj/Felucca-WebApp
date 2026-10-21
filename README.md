@@ -17,6 +17,7 @@ python3 serve.py            # http://localhost:8766/app/index.html?mock=1
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
 node test_backup.mjs        # the full backup
+node test_project_import.mjs # firmware project bytes, import/restore compatibility guards
 node test_catalog.mjs       # catalogs, stable ids and settings compatibility
 node test_legacy.mjs        # stored-object export (STORE_LIST / STORE_GET) and legacy migration vectors (FELUCCA_ROOT: regenerate from the firmware)
 ```
@@ -54,6 +55,11 @@ warn when saving that backup and refuse to start a restore to firmware without t
 writing any objects. Keep the original archive and use a compatible build; the editor never truncates it to
 PER4. The capability determines support, since development builds may still display version 1.6. Other archive
 objects can have their own older-firmware limits.
+
+FUN10 projects are checked using the firmware’s little-endian numeric magic. Single-project import and complete
+restore refuse projects requiring more parameters than the connected firmware supports, before sending any
+writes. Projects using conditional steps require the condition capability; complete restore can explicitly skip
+those projects (including the current music) while restoring compatible objects. Original project bytes are retained.
 
 Firmware advertising extended backups (`INFO 58 01`) is queried with `BACKUP_LIST 1`: its FM6 voice bank (id 20)
 and saved SLICE records (id 21) join the archive, with SLICE restored after the samples. This also applies to the
