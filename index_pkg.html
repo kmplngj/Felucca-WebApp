@@ -256,7 +256,7 @@ function archiveInfo(a) {
     ext[4] === 0x4d && ext[5] === 1 && ext[8] === 0x42 && ext[9] === 1 && (ext[10] & 1);
   let backupExtraCaps = 0;
   const lengths = { 0x55: 1, 0x4d: 2, 0x42: 1, 0x46: 2, 0x53: 1, 0x50: 1, 0x4E: 1, 0x52: 1,
-    0x4C: 1, 0x41: 2, 0x54: 1, 0x57: 1, 0x56: 1, 0x43: 1, 0x4B: 1, 0x45: 1, 0x49: 12, 0x58: 1 };
+    0x4C: 1, 0x41: 2, 0x54: 1, 0x57: 1, 0x56: 1, 0x43: 1, 0x4B: 1, 0x45: 1, 0x49: 12, 0x58: 1, 0x59: 1 };   // 0x59: #456 raw store export
   if (supported) for (let q = 1; q < ext.length;) {
     const tag = ext[q], n = lengths[tag];
     if (!n || ext[q + 1] !== 1 || q + 2 + n > ext.length) throw new Error("Invalid or unsupported INFO capability block");

@@ -42,6 +42,13 @@ const TEXT = {
     bankRc4: "a flash error", bankRc5: "the transfer was ended: send it again", tryIt: "Try in browser", tryNext: "Try the next version", usbQ: "Switch USB SERIAL? USB drops for a moment.", usb: "USB is switching; connecting again",
     didLoad: "Loaded {0}", didKeep: "Kept {0}", didSave: "Saved to {0}", didRestore: "Restored {0}", isEmpty: "{0} empty",
     didSend: "Sent to {0}", didImport: "Imported {0}", skippedN: "{0} skipped",
+    rawTitle: "STORED", rawReadOnly: "READ ONLY", rawList: "List", rawAll: "Download all", rawFile: "Files", rawOriginal: "Original",
+    rawMigrate: "Migrate", rawMigrated: "Download migrated", rawNotPorted: "not ported yet", rawPorted: "ported", rawRefused: "Not converted",
+    rawSame: "Already current: nothing to change", rawPowerOn: "power-on sound", rawRecords: "{0} converted, {1} kept as they are",
+    rawLegacyRecs: "{0} older records", rawFileBad: "not a stored object file", rawNoTarget: "No migration for this FM-1",
+    rawNoUpload: "Each object exactly as stored on the FM-1. Migrating is optional and only makes a file: there is no upload yet (the firmware has no current-format upload, Felucca issue 456). Keep the original; leaving it unmigrated is fine.",
+    rawDidList: "{0} stored objects", rawDidAll: "Stored objects saved to a file", rawDidOriginal: "{0}: original saved", rawDidMigrate: "{0}: migrated file saved",
+    rawEmpty: "EMPTY", rawCurrent: "CURRENT", rawLegacy: "LEGACY", rawUnknown: "UNKNOWN", rawDamaged: "DAMAGED",
   },
   ja: {
     connect: "接続", disconnect: "切断", connecting: "接続中", nomidi: "このブラウザは MIDI に未対応",
@@ -78,6 +85,13 @@ const TEXT = {
     bankRc4: "フラッシュの書き込みエラー", bankRc5: "転送が終わってしまいました。もう一度送ってください", tryIt: "ブラウザで試す", tryNext: "次の版を試す", usbQ: "USB SERIAL を切り替えますか？ USB が一度切れます。", usb: "USB を切り替え中、つなぎ直します",
     didLoad: "{0} を読み込みました", didKeep: "{0} をライブラリに追加", didSave: "{0} に保存しました", didRestore: "{0} から復元しました", isEmpty: "{0} は空",
     didSend: "{0} へ送りました", didImport: "{0} 件取り込み", skippedN: "{0} 件スキップ",
+    rawTitle: "保存データ", rawReadOnly: "読み出しのみ", rawList: "一覧", rawAll: "全部ダウンロード", rawFile: "ファイル", rawOriginal: "元データ",
+    rawMigrate: "変換", rawMigrated: "変換結果をダウンロード", rawNotPorted: "未対応", rawPorted: "対応済み", rawRefused: "変換できません",
+    rawSame: "すでに現在の形式です（変更なし）", rawPowerOn: "電源投入時の音", rawRecords: "{0} 件変換、{1} 件はそのまま",
+    rawLegacyRecs: "古いレコード {0} 件", rawFileBad: "保存データのファイルではありません", rawNoTarget: "この FM-1 向けの変換はありません",
+    rawNoUpload: "FM-1 に保存されているとおりのデータです。変換は任意で、ファイルを作るだけです。まだアップロードはできません（ファームウェアに現在の形式のアップロードがありません、Felucca の issue 456）。元データは残してください。変換しないままでも問題ありません。",
+    rawDidList: "保存データ {0} 件", rawDidAll: "保存データをファイルに保存しました", rawDidOriginal: "{0}: 元データを保存しました", rawDidMigrate: "{0}: 変換結果を保存しました",
+    rawEmpty: "EMPTY", rawCurrent: "CURRENT", rawLegacy: "LEGACY", rawUnknown: "UNKNOWN", rawDamaged: "DAMAGED",
   },
 };
 export const LANGS = ["en", "ja"];

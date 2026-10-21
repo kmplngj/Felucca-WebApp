@@ -17,7 +17,9 @@ python3 serve.py            # http://localhost:8766/app/index.html?mock=1
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
 node test_backup.mjs        # the full backup
+node test_project_import.mjs # firmware project bytes, import/restore compatibility guards
 node test_catalog.mjs       # catalogs, stable ids and settings compatibility
+node test_legacy.mjs        # stored-object export (STORE_LIST / STORE_GET) and legacy migration vectors (FELUCCA_ROOT: regenerate from the firmware)
 ```
 
 Checks that compare with the firmware use files from a Felucca checkout, passed in by environment variables:
@@ -54,6 +56,11 @@ writing any objects. Keep the original archive and use a compatible build; the e
 PER4. The capability determines support, since development builds may still display version 1.6. Other archive
 objects can have their own older-firmware limits.
 
+FUN10 projects are checked using the firmware’s little-endian numeric magic. Single-project import and complete
+restore refuse projects requiring more parameters than the connected firmware supports, before sending any
+writes. Projects using conditional steps require the condition capability; complete restore can explicitly skip
+those projects (including the current music) while restoring compatible objects. Original project bytes are retained.
+
 Firmware advertising extended backups (`INFO 58 01`) is queried with `BACKUP_LIST 1`: its FM6 voice bank (id 20)
 and saved SLICE records (id 21) join the archive, with SLICE restored after the samples. This also applies to the
 installer's backup before returning to official firmware. Older devices receive the original backup query and
@@ -63,6 +70,35 @@ For a browser-only sparse-catalog check, run `python3 serve.py` and open
 `http://localhost:8766/app/index.html?mock=1&catalog=1&test14=1&omit=12`. Track 2 and its saved FM6 sound show
 `N/A (12)`; TEST14 stays engine 14 with two presets, and user-favourite requests use 127. These mock options
 only affect the simulated device.
+
+## Stored-object recovery: hardware and mock
+
+The STORED card in the new editor reads the raw store advertised by firmware `INFO 59 01` bit 0
+(Felucca #492, merged in firmware `63f4906`). It downloads originals and creates optional migrated files locally.
+It does not upload, restore or replace stored objects. Keep the original `.bin` and its `.json` manifest together.
+
+From this checkout, run `python3 serve.py 8766`. For an FM-1 already running the tested #492 firmware, open
+**http://localhost:8766/app/index.html** in Chrome or Edge, without query parameters. The server prints a mock
+example URL; use the plain URL for hardware. Stop playback on the FM-1, close other MIDI applications, connect
+by a USB data cable, click CONNECT and allow MIDI/SysEx access. Open PROJECT and find STORED, then List.
+Original downloads a selected object's `.bin` and manifest; Download all saves a `felucca-store` JSON archive.
+Firmware without this capability shows no STORED card. This procedure needs no firmware installation.
+
+For a separate browser-only exercise, open
+`http://localhost:8766/app/index.html?mock=1&raw=1`. The simulated store includes a legacy FUN1 project and damaged,
+unknown and empty objects. Select PROJECT, then STORED > List; on PROJECT A select Migrate, read the report and
+select the migrated-file download. A device containing only current projects need not show a legacy project or
+Migrate button: use this mock, or Files with a genuine older original and its manifest, for the conversion exercise.
+Files remains inside the capability-gated STORED card, so offline conversion requires that mock or a connected
+compatible device. It never requires writing an old fixture into hardware.
+
+Migration targets the current standard profile (111 parameters and matching playable engine IDs). Other profiles
+can still download originals, but conversion is disabled with a target-mismatch explanation. Legacy FUN1..FUN9 and
+older-count FUN10 projects plus supported user-preset records can convert to files. Settings, the retired FM6 bank
+and converted presets' FM6 patch links are not converted. Newer, damaged and unknown formats are preserved for
+export and refused for conversion. A migrated `.bin` is a recovery file, not an installable firmware package or an
+upload-ready project file; there is no current-schema upload in this workflow. Real USB/device observations remain
+separate from the host and mock tests.
 
 ## Licence
 

@@ -261,15 +261,15 @@ static void json_bytes(const uint8_t *p, uint32_t n) { putchar('['); for (uint32
 static void json_reply(uint32_t cmd,const uint8_t*a,uint32_t n) { uint32_t z=request(cmd,a,n); json_bytes(host_wire+5,z-6); }
 int main(void) {
  static persist_rec_t r, r4, r2; uint8_t a[4]; reset(); panel=PANEL_DEFAULT;
- printf("{\"info\":"); json_reply(ED_INFO,a,0);
+ printf("{\"testEngine\":%u,\"info\":", (unsigned)ENGI_TEST); json_reply(ED_INFO,a,0);
  printf(",\"per4\":"); settings_export_rec(&r); r4=r; json_bytes((const uint8_t*)&r,persist_len(&r));
- favorite_set(14,1,1); settings_export_rec(&r); printf(",\"per6\":"); json_bytes((const uint8_t*)&r,persist_len(&r));
+ favorite_set(ENGI_TEST,1,1); settings_export_rec(&r); printf(",\"per6\":"); json_bytes((const uint8_t*)&r,persist_len(&r));
  memset(&favorites,0,sizeof favorites);uint32_t rc6=bk_put((const uint8_t*)&r,persist_len(&r));settings_export_rec(&r2);
  uint32_t same6=!rc6&&!memcmp(&r,&r2,persist_len(&r));
  uint32_t rc4=bk_put((const uint8_t*)&r4,persist_len(&r4));settings_export_rec(&r2);
  printf(",\"settingsRoundtrip\":%u",same6&&!rc4&&!memcmp(&r4,&r2,persist_len(&r4)));
  up_store(3,"MINE"); a[0]=ENG_USER_WIRE;a[1]=3;a[2]=64;a[3]=1;printf(",\"fav\":");json_reply(ED_FAV_GET,a,4);
- a[0]=14;printf(",\"names14\":");json_reply(ED_NAMES,a,1);
+ a[0]=ENGI_TEST;printf(",\"testNames\":");json_reply(ED_NAMES,a,1);
  trk[0].engine=40;trk[0].eng_req=40;trk[0].preset=101;
  for(uint32_t k=0;k<8;k++)trk[0].p[P_E0+k]=-64+(int32_t)k;
  printf(",\"missing\":");json_reply(ED_DUMP,a,0);
@@ -283,11 +283,15 @@ int main(void) {
     execFileSync(process.env.CC || "cc", ["-O1", "-w", "-I" + join(fw, "tests"), "-I" + join(fw, "build/gen"), "-I" + join(fw, "firmware/src"), "-DFELUCCA_ENG_TEST14=1", `-DFELUCCA_ENG_OMIT=${omit}`, source, "-lm", "-o", exe], { stdio: "pipe" });
     const f = JSON.parse(execFileSync(exe, { encoding: "utf8" }));
     assert.equal(f.settingsRoundtrip,1,"actual firmware restores PER4/PER6 byte for byte");
+    assert.ok(Number.isInteger(f.testEngine) && f.testEngine >= 14 && f.testEngine < 64, "test placeholder has a valid extended stable id");
+    assert.equal(settingsFormat({ objects: [{ id: 1, bytes: Uint8Array.from(f.per4) }] }), "PER4");
+    assert.equal(settingsFormat({ objects: [{ id: 1, bytes: Uint8Array.from(f.per6) }] }), "PER6", "placeholder favourite actually exercises PER6");
     for (const E of [app, legacy]) {
       const i = E.parse[E.CMD.INFO](f.info); assert.equal(E.userEngine(i), 127); assert.equal(i.backupExtraCaps, 0);
-      assert.equal(E.engineAvailable(i, 14), true); if (omit >= 0) assert.equal(E.engineAvailable(i, omit), false);
+      assert.equal(i.engines[f.testEngine], "TEST14");
+      assert.equal(E.engineAvailable(i, f.testEngine), true); if (omit >= 0) assert.equal(E.engineAvailable(i, omit), false);
       const dump = E.parse[E.CMD.DUMP](f.missing, i); assert.equal(dump.engine, 40); assert.equal(dump.preset, 101); eq(dump.p.slice(i.pe0), [-64,-63,-62,-61,-60,-59,-58,-57]);
-      assert.equal(E.parse[E.CMD.FAV_GET](f.fav).engine, 127); assert.equal(E.parse[E.CMD.NAMES](f.names14).names.length, 2);
+      assert.equal(E.parse[E.CMD.FAV_GET](f.fav).engine, 127); assert.equal(E.parse[E.CMD.NAMES](f.testNames).names.length, 2);
       assert.equal(installerInfo(f.info).backupExtraCaps, 0);
       const captured = (await E.capturePatch(async ([cmd]) => {
         if (cmd === E.CMD.DUMP) return f.drumDump;
@@ -299,7 +303,7 @@ int main(void) {
       eq(kept.grid,captured.grid);
       await roundtrip(Uint8Array.from(f.per4), i); await roundtrip(Uint8Array.from(f.per6), i);
     }
-    console.log(`native firmware: real INFO49+58, TEST14, omit=${omit}, missing DUMP and PER4/PER6 (${f.per4.length}/${f.per6.length} bytes) native+JS round trips ok`);
+    console.log(`native firmware: real INFO49+58, TEST14 id=${f.testEngine}, omit=${omit}, missing DUMP and PER4/PER6 (${f.per4.length}/${f.per6.length} bytes) native+JS round trips ok`);
   }
 } else console.log("native firmware: skipped (set FELUCCA_ROOT to a built firmware checkout)");
 console.log("catalog tests passed");

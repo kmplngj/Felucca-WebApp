@@ -171,13 +171,13 @@ export function readProject(file) {
 }
 
 // The projects of a backup (ids 0 the current one, 2..5 A..D) that use a step condition (1.5.5: 1:2 .. !FILL): FUN10
-// ("FUNA", 3840 bytes) whose steps' chance byte (the 9th of each, 64 steps a track after its np parameters, engine and
+// (numeric magic 0x46554e41, little-endian bytes "ANUF", 3840 bytes) whose steps' chance byte (the 9th of each, 64 steps a track after its np parameters, engine and
 // preset, from byte 68) holds 102..112. Firmware without conditions (no INFO 4B 01) cannot open them. -> their ids
 export function conditionalProjects(archive) {
   const out = [];
   for (const o of (archive && archive.objects) || []) {
     const b = o.bytes;
-    if (!(o.id === 0 || (o.id >= 2 && o.id <= 5)) || !b || b.length !== 3840 || String.fromCharCode(b[0], b[1], b[2], b[3]) !== "FUNA") continue;
+    if (!(o.id === 0 || (o.id >= 2 && o.id <= 5)) || !b || b.length !== 3840 || new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(0, true) !== 0x46554e41) continue;
     const np = b[66];
     let hit = false;
     for (let t = 0; t < 4 && !hit; t++) {
@@ -232,6 +232,99 @@ export async function restoreBackup(request, file, onProgress = () => {}, opts =
     }
   }
   return archive;
+}
+
+// kmplngj/Felucca#456: the raw store export (STORE_LIST 82 / STORE_GET 83, INFO 59 01 bit 0): every storage object as
+// flash holds it, including content the firmware cannot load. Read only: nothing here writes, restores or converts.
+// rawManifest and captureRawStore follow the firmware's reference reader (Felucca web/fm1backup.js, #492) with the same
+// checks; captureRawObject reads one object by the same rules. Types are the commit records' (0 settings, 1..4 projects,
+// 5, 6 user preset banks, 7 the retired FM6 bank, 8 the user presets' FM6 patches, 9 the autosave, 32 the FM6 voice
+// bank), not backup ids. A later firmware may list more types: they are kept and shown by number.
+export const RAW_CMD = { LIST: 82, GET: 83 };
+export const RAW_STATES = ["empty", "current", "legacy", "unknown", "damaged"];
+const RAW_REC = 23;
+function rawCheck(rc) {
+  if (rc) throw new Error(({ 1: "Invalid raw store request", 3: "Stop playback first", 4: "No flash store on this device" })[rc] || `Raw store error ${rc}`);
+}
+export function rawManifest(a) {
+  if (a[0] !== 1) throw new Error("Unsupported raw store protocol");
+  rawCheck(a[1]);
+  if (!a[2] || a.length !== 3 + a[2] * RAW_REC) throw new Error("Incomplete raw store manifest");
+  const seen = new Set();
+  return Array.from({ length: a[2] }, (_, i) => {
+    const p = 3 + i * RAW_REC, state = RAW_STATES[a[p + 1]], size = bkR32(a, p + 3);
+    const crc = bkR32(a, p + 8), seq = bkR32(a, p + 13), magic = bkR32(a, p + 18);
+    if (seen.has(a[p]) || !state || (a[p + 2] > 1 && a[p + 2] !== 127) || size > 3840 ||
+        (state === "empty" ? size || crc || magic || (a[p + 2] === 127 && seq) :
+          (state !== "damaged" && !size) || a[p + 2] === 127))
+      throw new Error("Invalid raw store entry");
+    seen.add(a[p]);
+    return { type: a[p], state, copy: a[p + 2] === 127 ? null : a[p + 2], size, crc, seq, magic };
+  });
+}
+const rawSame = (a, b) => a.type === b.type && a.state === b.state && a.copy === b.copy && a.size === b.size && a.crc === b.crc && a.seq === b.seq && a.magic === b.magic;
+async function rawBytes(request, o, onChunk = () => {}) {
+  const bytes = new Uint8Array(o.size);
+  for (let off = 0; off < o.size; off += BACKUP_CHUNK) {
+    const size = Math.min(BACKUP_CHUNK, o.size - off);
+    const a = await request([RAW_CMD.GET, [o.type, ...bkU32(off), size & 127, size >>> 7]], { timeout: 1000, retries: 1 });
+    rawCheck(a[1]);
+    if (a[0] !== o.type || bkR32(a, 2) !== off || (a[7] | a[8] << 7) !== size) throw new Error("Unexpected raw store reply");
+    bytes.set(bkUnpack(a.slice(9), size), off);
+    onChunk(size);
+  }
+  // an intact object must match its listed CRC; a damaged one fails it by definition (a second LIST checks it)
+  if (o.state !== "damaged" && bkCrc(bytes) !== o.crc) throw new Error("The device changed during the export. Try again while stopped.");
+  return bytes;
+}
+export async function captureRawStore(request, firmware, onProgress = () => {}) {
+  const list = async () => rawManifest(await request([RAW_CMD.LIST, []], { timeout: 3000, retries: 0 }));
+  const manifest = await list(), objects = [], total = manifest.reduce((n, o) => n + o.size, 0); let done = 0;
+  for (const o of manifest) {
+    const bytes = await rawBytes(request, o, (n) => { done += n; onProgress(done, total); });
+    objects.push({ ...o, data: bkBase64(bytes) });
+  }
+  const again = await list();
+  if (again.length !== manifest.length || !again.every((o, i) => rawSame(o, manifest[i])))
+    throw new Error("The device changed during the export. Try again while stopped.");
+  return { format: "felucca-store", version: 1, firmware, created: new Date().toISOString(), objects };
+}
+// one object of the raw store (STORE_LIST, STORE_GET of its bytes, STORE_LIST again) -> {type, state, copy, size, crc,
+// seq, magic, bytes}: its bytes exactly as stored
+export async function captureRawObject(request, type) {
+  const list = async () => rawManifest(await request([RAW_CMD.LIST, []], { timeout: 3000, retries: 0 }));
+  const o = (await list()).find((x) => x.type === type);
+  if (!o) throw new Error("No such stored object");
+  const bytes = await rawBytes(request, o);
+  const again = (await list()).find((x) => x.type === type);
+  if (!again || !rawSame(again, o)) throw new Error("The device changed during the export. Try again while stopped.");
+  return { ...o, bytes };
+}
+// the small JSON manifest beside a downloaded original (.bin): what the export listed for it, the firmware it came from
+// and the file name of its bytes. info: the device's INFO ({version, pcount}); typeName: what the page calls it
+export function rawObjectManifest(o, info, file, typeName = "") {
+  const m = o.magic >>> 0, text = [0, 8, 16, 24].map((s) => (m >>> s) & 255).every((c) => c >= 32 && c <= 126)
+    ? String.fromCharCode(...[0, 8, 16, 24].map((s) => (m >>> s) & 255)) : "";
+  return { format: "felucca-store-object", version: 1, firmware: info && info.version || "", pcount: info && info.pcount || null,
+    created: new Date().toISOString(), file, type: o.type, typeName, state: o.state, copy: o.copy, size: o.size,
+    crc: o.crc, seq: o.seq, magic: m, magicText: text, crcOfFile: o.bytes ? bkCrc(o.bytes) : null };
+}
+// a felucca-store file (captureRawStore's) checked whole -> {firmware, objects: [{type, state, ..., bytes}]}
+export function readRawStore(file) {
+  if (typeof file === "string") { try { file = JSON.parse(file); } catch (_) { throw new Error("Not a Felucca store export"); } }
+  if (!file || file.format !== "felucca-store" || file.version !== 1 || !Array.isArray(file.objects) || !file.objects.length || file.objects.length > 127) throw new Error("Not a Felucca store export");
+  const seen = new Set();
+  const objects = file.objects.map((o) => {
+    if (!o || !Number.isInteger(o.type) || o.type < 0 || o.type > 127 || seen.has(o.type) || !RAW_STATES.includes(o.state) || !Number.isInteger(o.size) || o.size < 0 || o.size > 3840 ||
+        ![null, 0, 1].includes(o.copy) || [o.crc, o.seq, o.magic].some((n) => !Number.isInteger(n) || n < 0 || n > 0xffffffff) ||
+        typeof o.data !== "string" || o.data.length !== 4 * Math.ceil(o.size / 3) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(o.data)) throw new Error("Invalid store object");
+    rawManifest([1, 0, 1, o.type, RAW_STATES.indexOf(o.state), o.copy ?? 127, ...bkU32(o.size), ...bkU32(o.crc), ...bkU32(o.seq), ...bkU32(o.magic)]);
+    seen.add(o.type);
+    const bytes = Uint8Array.from(atob(o.data), (c) => c.charCodeAt(0));
+    if (bytes.length !== o.size || (o.state !== "damaged" && o.size && bkCrc(bytes) !== o.crc)) throw new Error("Store object checksum mismatch");
+    return { type: o.type, state: o.state, copy: o.copy ?? null, size: o.size, crc: o.crc, seq: o.seq, magic: o.magic, bytes };
+  });
+  return { firmware: file.firmware, created: file.created, objects };
 }
 
 // Installer connection: no editor page or watcher owns this input simultaneously.
