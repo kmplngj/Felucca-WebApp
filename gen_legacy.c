@@ -555,7 +555,10 @@ static void bank_random(up_bank_t *bk, int fixed)
         if (!fixed && !rn(6)) { memset(r, 0, sizeof *r); continue; }
         if (!fixed) {
             if (ver < 4u && np > UP_PMAX) np = 69;
-            rec_make(r, ver, reng(0), np, NAMES[rn(6)], 1);
+            /* Keep the committed vectors' name-first RNG order across compilers. */
+            const char *name = NAMES[rn(6)];
+            uint8_t engine = reng(0);
+            rec_make(r, ver, engine, np, name, 1);
             if (!rn(12)) r->ver = 6;                          /* a later record version: inert */
             if (!rn(12)) r->name[1] = 5;                      /* a name UP_PUT refuses */
         }
