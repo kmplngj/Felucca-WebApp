@@ -171,13 +171,13 @@ export function readProject(file) {
 }
 
 // The projects of a backup (ids 0 the current one, 2..5 A..D) that use a step condition (1.5.5: 1:2 .. !FILL): FUN10
-// ("FUNA", 3840 bytes) whose steps' chance byte (the 9th of each, 64 steps a track after its np parameters, engine and
+// (numeric magic 0x46554e41, little-endian bytes "ANUF", 3840 bytes) whose steps' chance byte (the 9th of each, 64 steps a track after its np parameters, engine and
 // preset, from byte 68) holds 102..112. Firmware without conditions (no INFO 4B 01) cannot open them. -> their ids
 export function conditionalProjects(archive) {
   const out = [];
   for (const o of (archive && archive.objects) || []) {
     const b = o.bytes;
-    if (!(o.id === 0 || (o.id >= 2 && o.id <= 5)) || !b || b.length !== 3840 || String.fromCharCode(b[0], b[1], b[2], b[3]) !== "FUNA") continue;
+    if (!(o.id === 0 || (o.id >= 2 && o.id <= 5)) || !b || b.length !== 3840 || new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(0, true) !== 0x46554e41) continue;
     const np = b[66];
     let hit = false;
     for (let t = 0; t < 4 && !hit; t++) {
