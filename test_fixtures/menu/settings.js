@@ -20,6 +20,16 @@ try {
   check(field("AUTO OFF").options.length === 13 && field("ALL DARK").options.length === 5, "dynamic enum choices");
   check(!field("2ND CORE") && field("WAKE"), "sparse ID33 discovered after missing CPU2 ID32");
   check(field("LEDS").options.length === 6, "all inverse LED choices exposed");
+  const leds = field("LEDS"); leds.focus();
+  mock.state.menu[4] = 5;
+  await dev.readMenu();
+  check(leds.value === "5", "confirmed reread reconciles a focused idle row");
+  leds.value = "3"; leds.dispatchEvent(new Event("input"));
+  mock.state.menu[4] = 4;
+  await dev.readMenu();
+  check(leds.value === "3", "confirmed reread preserves an unsubmitted focused draft");
+  leds.blur();
+  check(leds.value === "4", "blur restores the latest confirmed reread after a cancelled draft");
   const dark = field("ALL DARK"); dark.focus();
   await dev.menuSet(17, 3);
   pick(dark, 2); await tick(); await tick();
@@ -31,6 +41,8 @@ try {
   let complete;
   dev.menuSet = async () => new Promise((r) => { complete = (value, rc) => { item.value = value; r(rc); }; });
   pick(dark, 4); await tick();
+  screen.menu([{ ...item, value: 0 }]);
+  check(dark.value === "4", "confirmed refresh cannot overwrite a submitted edit in flight");
   dark.value = "3"; dark.dispatchEvent(new Event("input"));
   complete(4, 4); await tick();
   check(dark.value === "3", "in-flight confirmation preserves a newer uncommitted picker draft");
@@ -41,6 +53,7 @@ try {
   dev.menuSet = async () => new Promise((r) => completions.push((value, rc) => { item.value = value; r(rc); }));
   pick(dark, 3); await tick(); pick(dark, 4); await tick();
   completions[0](3, 0); await tick();
+  screen.menu([{ ...item, value: 3 }]);
   check(dark.value === "4", "older committed response does not overwrite newer edit");
   completions[1](0, 2); await tick();
   check(dark.value === "0", "latest rejected response restores actual value while focused");
@@ -58,7 +71,7 @@ try {
   check(usb.value === "0", "cancelled USB change rolls back with keyboard focus");
   dev.menuSet = original;
   // Leave the complete settings surface rendered for responsive/theme inspection.
-  dark.blur(); result.textContent = "PASS: dynamic/sparse descriptors, focused refusal, draft preservation, ordered completion, failure and USB cancellation";
+  dark.blur(); result.textContent = "PASS: dynamic/sparse descriptors, focused rereads/refusal, draft preservation, ordered completion, failure and USB cancellation";
   document.documentElement.dataset.testResult = "passed";
 } catch (e) {
   result.textContent = "FAIL: " + e.message; document.documentElement.dataset.testResult = "failed"; throw e;
