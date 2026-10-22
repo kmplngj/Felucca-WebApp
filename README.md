@@ -14,6 +14,7 @@ sent to a server. The site is published at https://hugelton.github.io/Felucca/.
 
 ```sh
 python3 serve.py            # http://localhost:8766/app/index.html?mock=1
+node test_settings.mjs      # MENU replies, sparse IDs and AUTO OFF constraints (mock only)
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
 node test_backup.mjs        # the full backup
@@ -35,6 +36,20 @@ NOISE or FM6; all compiler outputs stay in a temporary directory. Without the fi
 JavaScript checks still run and this native check is explicitly skipped.
 
 The editor protocol is described in the firmware repository (`web/EDITOR_PROTOCOL.md`).
+
+## Device settings
+
+The new editor builds Settings from the connected firmware's MENU descriptors, including all six LED
+brightness modes and the AUTO OFF, WAKE and ALL DARK options when advertised. AUTO OFF keeps its combined
+mode/time values over MIDI; the native panel's detail page does not add a separate editor protocol.
+ALL DARK must be later than an enabled AUTO OFF timer. Rejected changes restore the device's actual value;
+RAM-only and deferred-save replies retain the applied value and display their existing save-status messages.
+Device-side changes appear when Settings is reopened. Older firmware keeps its advertised controls.
+
+For a browser regression without hardware, run `python3 serve.py 8774` and open
+`http://localhost:8774/test_fixtures/menu/settings.html`. It must report PASS. This fixture creates only a
+simulated MIDI device and checks focused rollback, newer picker drafts, request failures and sparse IDs.
+The retained classic editor does not expose the MENU settings UI.
 
 ## Engine catalogs and backup compatibility
 

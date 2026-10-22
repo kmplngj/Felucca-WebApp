@@ -1069,6 +1069,8 @@ function dir0() { return mkdtempSync(join(tmpdir(), "felucca-tokens-")); }
     "build: the fonts and their licences beside the page (fonts/)");
 }
 
+await import("./test_settings.mjs");
+
 // Keep the independent firmware-byte regression in the customary app test entry point.
 await import("./test_project_import.mjs");
 
