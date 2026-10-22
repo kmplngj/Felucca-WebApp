@@ -729,7 +729,7 @@ export class Device {
     if (items) { this.menu = items; this.emit("menu", items); }
     return this.menu;
   }
-  /* -> rc (as UI_SET: 0 saved, 3 not saved, 4 after STOP, 1 refused); USB SERIAL changed: the device leaves the bus
+  /* -> rc (as UI_SET: 0 saved, 3 not saved, 4 after STOP, 1 unknown, 2 refused timer order); USB SERIAL changed: the device leaves the bus
      and comes back (every USB port), so this connection ends ("usb") and the page connects again */
   async menuSet(id, value) {
     await this.idle();
@@ -737,11 +737,13 @@ export class Device {
     const before = m ? m.value : null;
     const rc = await this.op(async () => {
       const r = parse[CMD.MENU_SET](await this.rq(req.menuSet(id, value), FLASH_OPT));
-      if (m && !r.rc) m.value = r.value;
-      if (id === 0 && !r.rc) await this.syncPreferences();   /* (COLOR is the display preference 0) */
+      /* 3/4 applied too; 2 refuses a timer pair and returns its unchanged actual value.
+         rc 1 only echoes the request, so it is never authoritative. */
+      if (m && [0, 2, 3, 4].includes(r.rc)) m.value = r.value;
+      if (id === 0 && [0, 3, 4].includes(r.rc)) await this.syncPreferences();   /* (COLOR is the display preference 0) */
       return r.rc;
     });
-    if (m && m.name === "USB SERIAL" && rc === 0 && m.value !== before) this.close("usb");
+    if (m && m.name === "USB SERIAL" && [0, 3, 4].includes(rc) && m.value !== before) this.close("usb");
     else this.emit("menu", this.menu);
     return rc;
   }

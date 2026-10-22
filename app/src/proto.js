@@ -7,6 +7,7 @@
 // checks against both (FELUCCA_PROTO=app: this file). Since the move, only the mock has changed, towards the firmware:
 // - MOTION set / delete refuse (rc 1) a step >= 64, a parameter that cannot be recorded and a value out of range
 // - INFO advertises the full backup (42 01 03) and BACKUP_LIST / GET / PUT answer as the firmware's (opt.noBackup: not)
+// - AUTO OFF: wire17 combined mode/time, WAKE31, conditional 2ND CORE32, ALL DARK33; rc2 timer order refused.
 // - 1.0.4: the MENU settings (INFO 4E 01 count, MENU_DESC 72, MENU_SET 73; opt.noMenu: not), the firmware's items (MENU)
 // - 1.0.5: ratchets (INFO 52 01 04, a byte after the chance in steps; opt.noRatchet: not), MENU tabs
 // - 1.1: parameter locks (INFO 4C 01 01, MOTION ops 5..7 with the kinds; opt.noLocks: not)
@@ -1618,7 +1619,7 @@ const MENU = [
   /* 1.2 (Discussion #127): the keys show the selected track's scale, appended, shown in CONTROL */
   { id: 16, name: "SCALE LEDS", names: ["OFF", "ON"], def: 0, tab: 1 },
   /* 1.1.5: the screen and its backlight off after a while without panel input (the sound goes on), shown in DISPLAY */
-  { id: 17, name: "SCREEN OFF", names: ["NEVER", "5 MIN", "15 MIN", "30 MIN", "60 MIN"], def: 0, tab: 0 },  // (1.1.5.1: NEVER by default; 1.1.5: 30 MIN)
+  { id: 17, name: "AUTO OFF", names: ["NEVER", "SCREEN 5m", "SCREEN 15m", "SCREEN 30m", "SCREEN 60m", "LEDS 5m", "LEDS 15m", "LEDS 30m", "LEDS 60m", "BOTH 5m", "BOTH 15m", "BOTH 30m", "BOTH 60m"], def: 0, tab: 0 },  // (1.1.5.1: NEVER by default; 1.1.5: 30 MIN)
   /* 1.2 (Discussion #165): the HOME scope after MASTER (OUT) or before it (MIX: its size does not follow the volume) */
   { id: 18, name: "SCOPE", names: ["OUT", "MIX"], def: 0, tab: 0 },
   /* 1.2 (Discussion #169): on SEQ > STEP, stopped, moving the cursor sounds the step; (#155) step recording's keys add
@@ -1639,6 +1640,9 @@ const MENU = [
   ...[0, 1, 2, 3].map((k) => ({ id: 26 + k, name: `T${k + 1} CHANNEL`, names: MENU_TCH, def: k, tab: 3, proj: true })),
   /* 1.5.5 (#208): MIDI IN notes into a track that is not selected select it (held off while the selected one plays) */
   { id: 30, name: "AUTO SELECT", names: ["OFF", "ON"], def: 0, tab: 3 },
+  { id: 31, name: "WAKE", names: ["+MIDI", "PANEL"], def: 0, tab: 0 },
+  { id: 32, name: "2ND CORE", names: ["OFF", "ON (BETA)"], def: 0, tab: 4 },
+  { id: 33, name: "ALL DARK", names: ["NEVER", "5 MIN", "15 MIN", "30 MIN", "60 MIN"], def: 0, tab: 0 },
 ];
 /* the MENU settings the device offers, in its menu's order (firmware without them: []); rq as the other readers */
 async function readDeviceMenu(rq, info) {
@@ -1652,6 +1656,9 @@ async function readDeviceMenu(rq, info) {
 }
 
 function makeMockDevice(opt = {}) {
+  /* noAutoOff: released legacy SCREEN OFF; noCpu2: sparse stable IDs, not a missing descriptor index. */
+  const menu = MENU.filter((m) => !(opt.noCpu2 && m.id === 32) && !(opt.noAutoOff && m.id >= 31))
+    .map((m) => opt.noAutoOff && m.id === 17 ? { ...m, name: "SCREEN OFF", names: ["NEVER", "5 MIN", "15 MIN", "30 MIN", "60 MIN"] } : m);
   const NONOFF = ["OFF", "ON"], NDIV = ["1/4", "1/8", "1/16", "1/32", "8T", "16T", "1/2", "1/1", "2BAR", "4BAR"], NGO = ["--", "GO"], NDASH = ["--"];
   const D = (label, fmt, min, max, def, names = null, unit = "") => ({ label, fmt, min, max, def, names, unit });
   const E = (label, names, def) => D(label, F.ENUM, 0, names.length - 1, def, names);
@@ -2071,10 +2078,10 @@ function makeMockDevice(opt = {}) {
       }
       case CMD.MENU_DESC: {
         if (opt.noMenu || opt.noFm6 || !syncCaps() || a.length !== 1) return null;
-        const i = a[0], m = MENU[i], names = m && (m.names || palNames());
+        const i = a[0], m = menu[i], names = m && (m.names || palNames());
         b(i);
         if (!m) { b(127); break; }
-        b(m.id); b(m.kind || 0); v(m.id === 0 ? palCur() : m.g != null ? st.g[m.g] : st.menu[i]);
+        b(m.id); b(m.kind || 0); v(m.id === 0 ? palCur() : m.g != null ? st.g[m.g] : st.menu[m.id]);
         if (m.kind === 1) { v(m.min); v(m.max); s(m.name); s(m.unit); }   /* (1.2 TUNE: a number, its unit) */
         else { v(0); v(names.length - 1); s(m.name); names.forEach(s); }
         if (!opt.noMenuTabs) { b(m.tab); s(MENU_TABS[m.tab]); }   /* (1.0.5: the tab; opt.noMenuTabs: as 1.0.4) */
@@ -2082,10 +2089,16 @@ function makeMockDevice(opt = {}) {
       }
       case CMD.MENU_SET: {
         if (opt.noMenu || opt.noFm6 || !syncCaps() || a.length !== 3) return null;
-        const i = MENU.findIndex((m) => m.id === a[0]), m = MENU[i], val = v14dec(a[1], a[2]);
+        const m = menu.find((m) => m.id === a[0]), val = v14dec(a[1], a[2]);
         if (!m) { b(1); b(a[0]); v(val); break; }
         const x = m.kind === 1 ? Math.max(m.min, Math.min(m.max, val)) : Math.max(0, Math.min((m.names || palNames()).length - 1, val));
-        if (m.id === 0) palChoose(x); else if (m.g != null) st.g[m.g] = x; else st.menu[i] = x;
+        /* A full-dark timer must be strictly later than the first stage (or NEVER).
+           rc 2 returns unchanged actual state, never the refused request. */
+        const stage = m.id === 17 ? x : st.menu[17], dark = m.id === 33 ? x : st.menu[33];
+        if (!opt.noAutoOff && (m.id === 17 || m.id === 33) && stage && dark && dark <= ((stage - 1) % 4) + 1) {
+          b(2); b(m.id); v(st.menu[m.id]); break;
+        }
+        if (m.id === 0) palChoose(x); else if (m.g != null) st.g[m.g] = x; else st.menu[m.id] = x;
         b(m.g != null || m.proj ? 0 : opt.noFlash ? 3 : opt.deferSettings ? 4 : 0); b(m.id); v(x);   /* (the project's: rc 0) */
         break;
       }
@@ -2141,7 +2154,7 @@ function makeMockDevice(opt = {}) {
         if (!opt.legacy && !opt.v3 && !opt.v5) {
           b(16);
           if (st.uiCaps) { b(0x55); b(1); b(st.uiCaps); b(0x4d); b(1); b(64); b(1); if (!opt.noBackup) { b(0x42); b(1); b(3); } if (!opt.noFm6) { b(0x46); b(1); b(FM6.FACTORY_PK.length); b(0); }
-            if (syncCaps()) { b(0x53); b(1); b(syncCaps()); if (!opt.noFm6) { b(0x50); b(1); b(3); if (!opt.noMenu) { b(0x4E); b(1); b(MENU.length); } } if (ratchetOn()) { b(0x52); b(1); b(4); if (locksOn()) { b(0x4C); b(1); b(1);
+            if (syncCaps()) { b(0x53); b(1); b(syncCaps()); if (!opt.noFm6) { b(0x50); b(1); b(3); if (!opt.noMenu) { b(0x4E); b(1); b(menu.length); } } if (ratchetOn()) { b(0x52); b(1); b(4); if (locksOn()) { b(0x4C); b(1); b(1);
               if (capOn()) { b(0x41); b(1); b(0); b(1); b(0x54); b(1); b(16); if (!opt.noLanes) { b(0x57); b(1); b(NTRK); if (!opt.noVbank) { b(0x56); b(1); b(32); if (!opt.noLearn) { b(0x43); b(1); b(16); if (!opt.noCond) { b(0x4B); b(1); b(11); if (!opt.noPalette) { b(0x45); b(1); b(5); } } } } } } } } } }  /* (FM6 v2: no bank, preset
               patches; MENU settings; RATCH; locks; 1.2: 128 records, nudge, song lanes) */
         }

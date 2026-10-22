@@ -75,11 +75,18 @@ export function settingsScreen(root, ui) {
   }
   const trackRoute = () => { const d = dev.gdesc[14]; return !!(d && d.names && d.names[dev.dump.g[14] - d.min] === "TRACK"); };
   function row(m) {
+    let edit = 0;
+    /* Opening Settings refreshes descriptors without rebuilding these controls. */
+    const actual = () => ((dev.menu || []).find((x) => x.id === m.id) || m).value;
     const d = m.kind === 0 ? { fmt: 8, min: m.min, max: m.max, def: m.min, label: m.name, unit: "", names: m.names }
       : { fmt: 0, min: m.min, max: m.max, def: m.min, label: m.name, unit: m.unit, names: [] };
     const r = paramRow(d, m.value, async (v) => {
-      if (m.name === "USB SERIAL" && v !== m.value && !(await ui.confirm(t("usbQ")))) { r.update(m.value, false); return; }
-      ui.prefResult(await dev.menuSet(m.id, v));
+      const mine = ++edit;
+      try {
+        if (m.name === "USB SERIAL" && v !== actual() && !(await ui.confirm(t("usbQ")))) return;
+        ui.prefResult(await dev.menuSet(m.id, v));
+      } catch (e) { ui.say(e.message, "warn"); }
+      finally { if (mine === edit) r.update(actual(), false, true); }
     }, { icon: MENU_ICON[m.name] || null });   /* (no icon: the device's rows have none from 1.0.5) */
     /* (1.5.5: T1..T4 CHANNEL route only with MIDI IN = TRACK: dim otherwise, as the device draws them) */
     if (m.id >= 26 && m.id <= 29) r.el.classList.toggle("dim", !trackRoute());
