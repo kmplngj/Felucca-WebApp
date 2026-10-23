@@ -1532,7 +1532,7 @@ async function editorSetGate() {
   };
   const line = (head) => fn(head, "\n");
   const state = html.slice(html.indexOf("let busy = 0;"), html.indexOf("/* parameter ids (felucca/src/core.h)"));
-  const code = [state, line("const P = { LEVEL: 0, SLEN: 29 };"), line("const key = "), line("const pSlen = "), line("const gEng = "),
+  const code = [state, line("let connecting = false;"), line("let connectionEpoch = "), line("const P = { LEVEL: 0, SLEN: 29 };"), line("const key = "), line("const pSlen = "), line("const gEng = "),
     line("const hasTracks = "), fn("function assertSession("), fn("async function sessionRequest("), line("const rq = "),
     fn("async function getDump("), fn("function showValue("), fn("function touched("), fn("function userSet("),
     fn("async function sendSet("), fn("function selectTrack("), fn("async function afterSoundChange("), fn("function refreshAll("),
