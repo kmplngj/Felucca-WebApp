@@ -22,6 +22,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 PROBE_TIMEOUT = 30
 LOCKED_RUNNER_TIMEOUT = 18 * 60
+INTERTIGHT_SHA256 = "b81b73dcb64df3c230cabade7df6c5773bf863233f24c9ee51087519f1f88b6f"
 PACKAGE_SKIP = "packages: skipped (needs FM-1_v15.fwsc and a felucca/build.py build)"
 CLASSIC_SKIPS = {
     "editor: MENU settings (this editor has none)",
@@ -82,6 +83,22 @@ def firmware_environment(client_env):
     # build_identity.py must resolve the pinned firmware's Git identity, not the consumer PR's.
     # Keep job infrastructure (including step-summary/output paths) and client context outside these commands.
     return {key: value for key, value in client_env.items() if key not in FIRMWARE_IDENTITY_ENV}
+
+
+def font_input(firmware, override=None):
+    candidates = [Path(override).expanduser()] if override else [
+        firmware / "assets/fonts/InterTight[wght].ttf",
+        firmware / "docs/manual/fonts/InterTight[wght].ttf",
+    ]
+    source = next((path.resolve() for path in candidates if path.is_file()), None)
+    if source is None:
+        raise RuntimeError("Inter Tight source missing: " + ", ".join(str(path) for path in candidates))
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    # Both firmware locations contain the same original source for the committed client subset.
+    if digest != INTERTIGHT_SHA256:
+        raise RuntimeError(f"Inter Tight source SHA-256 mismatch: {source}: {digest}; expected {INTERTIGHT_SHA256}")
+    return {"path": str(source), "sha256": digest,
+            "selection": "FELUCCA_INTERTIGHT" if override else "firmware"}
 
 
 def browser_tests(directory, stage, env, results):
@@ -161,6 +178,9 @@ def main():
             raise RuntimeError("initialize firmware submodules at their pinned commits")
         env = {k: v for k, v in os.environ.items() if not k.startswith("FELUCCA_")}
         env.update(PYTHONDONTWRITEBYTECODE="1", FELUCCA_PROFILE="standard", FELUCCA_FONT="m8stealth")
+        if os.environ.get("FELUCCA_INTERTIGHT"):
+            # Resolve before uv changes cwd; an explicit bad override must not fall back to firmware.
+            env["FELUCCA_INTERTIGHT"] = str(Path(os.environ["FELUCCA_INTERTIGHT"]).expanduser().resolve())
         if not args.inside_locked_env:
             done = owned_run(["uv", "run", "--project", str(firmware), "--locked", "--group", "build",
                               "python", str(Path(__file__).resolve()), *sys.argv[1:], "--inside-locked-env"],
@@ -178,6 +198,8 @@ def main():
                         "client_dirty": output("git", "status", "--porcelain"), "node": output("node", "--version"),
                         "python": sys.version, "uv": output("uv", "--version"),
                         "cc": output(*cc, "--version").splitlines()[0], "profile": "standard"})
+        results["font_input"] = font_input(firmware, env.get("FELUCCA_INTERTIGHT"))
+        env["FELUCCA_INTERTIGHT"] = results["font_input"]["path"]
         # Include tool/revision provenance once the locked environment is ready.
         (directory / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
@@ -226,7 +248,6 @@ def main():
         env.update(FELUCCA_DESC=str(fixtures / "desc-legacy-web.json"), FELUCCA_TOOLS=str(firmware / "tools"),
                    FELUCCA_ROOT=str(firmware), FELUCCA_FIRMWARE=str(firmware),
                    FELUCCA_PALETTES=str(firmware / "tools/gen_ui_palettes.py"),
-                   FELUCCA_INTERTIGHT=str(firmware / "assets/fonts/InterTight[wght].ttf"),
                    FELUCCA_MENU=str(fixtures / "menu.json"), FELUCCA_MENU_NOCPU2=str(fixtures / "menu-nocpu2.json"))
         for name, command in [
             ("classic", ["node", "test_web.mjs"]),
