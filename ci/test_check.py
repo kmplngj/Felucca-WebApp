@@ -234,6 +234,7 @@ class AttemptSummary(unittest.TestCase):
         self.pin.write_text(json.dumps({"repository": "kmplngj/Felucca", "revision": revision}))
         self.previous_green()
         env = self.fake_tool("node", "print('v22 fixture')\n")
+        env.pop("FELUCCA_INTERTIGHT", None)  # Exercise missing discovery, independent of the caller's valid override.
         completed = self.run_gate("--firmware", str(firmware), "--inside-locked-env", env=env)
         self.assert_failed_attempt(completed, "Inter Tight source missing")
         self.assertEqual(json.loads(self.summary.read_text())["checks"], [])
