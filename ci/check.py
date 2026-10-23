@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,8 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+PROBE_TIMEOUT = 30
+LOCKED_RUNNER_TIMEOUT = 18 * 60
 PACKAGE_SKIP = "packages: skipped (needs FM-1_v15.fwsc and a felucca/build.py build)"
 CLASSIC_SKIPS = {
     "editor: MENU settings (this editor has none)",
@@ -32,8 +35,29 @@ FIRMWARE_IDENTITY_ENV = {
 }
 
 
+def owned_run(command, *, timeout, **kwargs):
+    if os.name != "posix":
+        raise RuntimeError("the CI runner requires macOS/Linux POSIX process groups")
+    # All uv/locked-runner descendants inherit this group, including stage subprocesses.
+    # Clean up before the parent reads/writes the summary, even if the group leader exited first.
+    with subprocess.Popen(command, start_new_session=True, **kwargs) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
 def output(*cmd, cwd=ROOT):
-    return subprocess.check_output(cmd, cwd=cwd, text=True).rstrip()
+    if "--inside-locked-env" in sys.argv:
+        # Stay in the parent's owned group; its cleanup also stops any descendants of a failed probe.
+        return subprocess.check_output(cmd, cwd=cwd, text=True, timeout=PROBE_TIMEOUT).rstrip()
+    done = owned_run(cmd, cwd=cwd, text=True, stdout=subprocess.PIPE, timeout=PROBE_TIMEOUT)
+    done.check_returncode()
+    return done.stdout.rstrip()
 
 
 def unexpected_skips(text, suite):
@@ -141,9 +165,9 @@ def main():
         env = {k: v for k, v in os.environ.items() if not k.startswith("FELUCCA_")}
         env.update(PYTHONDONTWRITEBYTECODE="1", FELUCCA_PROFILE="standard", FELUCCA_FONT="m8stealth")
         if not args.inside_locked_env:
-            done = subprocess.call(["uv", "run", "--project", str(firmware), "--locked", "--group", "build",
-                                    "python", str(Path(__file__).resolve()), *sys.argv[1:], "--inside-locked-env"],
-                                   cwd=ROOT, env=env)
+            done = owned_run(["uv", "run", "--project", str(firmware), "--locked", "--group", "build",
+                              "python", str(Path(__file__).resolve()), *sys.argv[1:], "--inside-locked-env"],
+                             cwd=ROOT, env=env, timeout=LOCKED_RUNNER_TIMEOUT).returncode
             child = json.loads((directory / "summary.json").read_text())
             if done or child.get("status") != "passed":
                 results = child

@@ -75,6 +75,15 @@ Read `build/ci/summary.json` first; it records revisions, tool versions, fixture
 logs and browser DOM output are beside it and are uploaded by CI for seven days. Required generated-input
 comparisons may not skip. Normal invocations invalidate the previous summary before startup checks; a missing
 checkout, wrong revision, missing tool or failed uv startup records a failed attempt with its cause. Printing the pin creates no artifacts.
+The normal entry point requires macOS or Linux. Metadata/tool-version probes have a 30-second limit; the owned
+`uv` process group has an 18-minute limit covering both locked-environment setup and the **entire gate**. This
+allows substantially more than the validated approximately five-minute gate while fitting under the workflow's
+20-minute job limit; individual check/browser limits remain 10 minutes/90 seconds. Before the parent records
+the outcome, it stops any remaining processes in that owned group, including a late summary writer. Other
+process groups are untouched. These guarantees apply to normal `python3 ci/check.py` invocations and descendants
+that inherit the owned group; the internal `--inside-locked-env` flag is not a standalone entry point. A tool that
+daemonizes into another session, a forced external kill, job cancellation or host shutdown can still prevent a
+completed summary; inspect the workflow conclusion as well as the summary.
 The retained classic editor's absent MENU UI, FM6 bank sender, MIDI LEARN and CUSTOM
 palette checks remain explicit feature skips. The historical package comparison also remains an explicit skip:
 it needs an official `FM-1_v15.fwsc` and target-build inputs that this host-only gate does not provide. A green
