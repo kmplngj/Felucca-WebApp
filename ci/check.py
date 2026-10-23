@@ -104,19 +104,16 @@ def browser_tests(directory, stage, env, results):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        stage("browser-driver", ["node", str(ROOT / "ci/test_browser.mjs"), chrome,
+                                 f"http://127.0.0.1:{server.server_port}"], timeout=90)
         fixtures = sorted((ROOT / "test_fixtures/menu").glob("*.html"))
         if not fixtures:
             raise RuntimeError("No browser fixtures found")
         for fixture in fixtures:
             name = "browser-" + fixture.stem
             with tempfile.TemporaryDirectory(prefix="felucca-chrome-") as profile:
-                command = [chrome, "--headless", "--disable-gpu", "--no-first-run",
-                           "--no-default-browser-check", "--disable-background-networking",
-                           f"--user-data-dir={profile}", "--dump-dom", "--timeout=60000",
-                           "--virtual-time-budget=30000",
-                           f"http://127.0.0.1:{server.server_port}/{fixture.relative_to(ROOT).as_posix()}"]
-                if hasattr(os, "geteuid") and os.geteuid() == 0:
-                    command.insert(1, "--no-sandbox")
+                command = ["node", str(ROOT / "ci/browser.mjs"), chrome,
+                           f"http://127.0.0.1:{server.server_port}/{fixture.relative_to(ROOT).as_posix()}", profile]
                 stage(name, command, timeout=90)
             dom = (directory / (name + ".log")).read_text()
             match = re.search(r'<p\b[^>]*\bid="result"[^>]*>(.*?)</p>', dom, re.S)

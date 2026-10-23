@@ -67,7 +67,12 @@ Firmware commands resolve their identity from the pinned firmware checkout, with
 identity variables removed from those subprocesses. The client job's provenance and step-summary context remain intact.
 
 It also starts a temporary loopback server and runs every `test_fixtures/menu/*.html` page in headless Chrome,
-using a separate temporary browser profile. Each page must report PASS. Set `CHROME_BIN` to the browser executable
+using a separate temporary browser profile. Node 22's built-in WebSocket client controls only that Chrome instance
+through its temporary loopback debugging port. Timers use real time: virtual-time acceleration can exhaust a
+fixture deadline while IndexedDB is still pending. A driver regression compares both clocks with an IndexedDB
+transaction and a controlled wall-clock release, and verifies a held release still fails at ten real seconds.
+Each page must report PASS. The driver waits at most 60 real seconds for the result, within the unchanged
+90-second browser-stage bound, and retains the page DOM on failure. Set `CHROME_BIN` to the browser executable
 if it is not found automatically. Browser fixture failures and missing tools or generated inputs fail the gate.
 These checks exercise mock MIDI; they do not establish real USB, audio, installation or FM-1 behavior.
 
