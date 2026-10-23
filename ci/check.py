@@ -26,6 +26,10 @@ CLASSIC_SKIPS = {
     "MIDI LEARN: (editor.html has no learn map)",
     "CUSTOM palette: (editor.html has none)",
 }
+FIRMWARE_IDENTITY_ENV = {
+    "GITHUB_ACTIONS", "GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH", "GITHUB_REPOSITORY", "GITHUB_REF", "GITHUB_SHA",
+    "FELUCCA_VERIFIED_PR", "FELUCCA_VERIFIED_COMMIT",
+}
 
 
 def output(*cmd, cwd=ROOT):
@@ -48,6 +52,12 @@ def firmware_pin(override):
     if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("firmware revision must be a full lowercase commit SHA")
     return pin, revision
+
+
+def firmware_environment(client_env):
+    # build_identity.py must resolve the pinned firmware's Git identity, not the consumer PR's.
+    # Keep job infrastructure (including step-summary/output paths) and client context outside these commands.
+    return {key: value for key, value in client_env.items() if key not in FIRMWARE_IDENTITY_ENV}
 
 
 def browser_tests(directory, stage, env, results):
@@ -139,31 +149,31 @@ def main():
                 results = child
                 raise RuntimeError(f"locked runner exited {done}: {child.get('error', 'no completed passing summary')}")
             return 0
+        fixtures = firmware / "build/host/webapp-ci"
+        fixtures.mkdir(parents=True, exist_ok=True)
+        cc = shlex.split(env.get("CC", "cc"))
+        results.update({"firmware_override": revision != pin["revision"], "submodules": submodules,
+                        "client_revision": output("git", "rev-parse", "HEAD"),
+                        "client_dirty": output("git", "status", "--porcelain"), "node": output("node", "--version"),
+                        "python": sys.version, "uv": output("uv", "--version"),
+                        "cc": output(*cc, "--version").splitlines()[0], "profile": "standard"})
+        # Include tool/revision provenance once the locked environment is ready.
+        (directory / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         results.update(status="failed", error=str(error))
         (directory / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
         print(error, file=sys.stderr)
         return 1
-    fixtures = firmware / "build/host/webapp-ci"
-    fixtures.mkdir(parents=True, exist_ok=True)
-    cc = shlex.split(env.get("CC", "cc"))
-    results.update({"firmware_override": revision != pin["revision"], "submodules": submodules,
-               "client_revision": output("git", "rev-parse", "HEAD"),
-               "client_dirty": output("git", "status", "--porcelain"), "node": output("node", "--version"),
-               "python": sys.version, "uv": output("uv", "--version"), "cc": output(*cc, "--version").splitlines()[0],
-               "profile": "standard"})
-    # Include tool/revision provenance once the locked environment is ready.
-    (directory / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
-
-    def stage(name, command, *, cwd=ROOT, timeout=600, stdout=None):
+    def stage(name, command, *, cwd=ROOT, timeout=600, stdout=None, command_env=None):
         start = time.monotonic()
         log_path = directory / (name + ".log")
+        process_env = env if command_env is None else command_env
         with log_path.open("w") as log:
             if stdout:
                 with stdout.open("w") as target:
-                    done = subprocess.run(command, cwd=cwd, env=env, stdout=target, stderr=log, timeout=timeout)
+                    done = subprocess.run(command, cwd=cwd, env=process_env, stdout=target, stderr=log, timeout=timeout)
             else:
-                done = subprocess.run(command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+                done = subprocess.run(command, cwd=cwd, env=process_env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         text = log_path.read_text()
         skips, unexpected = unexpected_skips(text, name)
         results["checks"].append({"name": name, "command": command, "cwd": str(cwd), "exit": done.returncode,
@@ -174,18 +184,22 @@ def main():
         print(f"{name}: PASS" + (f" ({len(skips)} documented skips)" if skips else ""), flush=True)
 
     try:
-        stage("runner-regressions", [sys.executable, "-m", "unittest", "discover", "-s", "ci", "-p", "test_*.py", "-v"])
-        stage("generate", [sys.executable, "-c", "import sys; sys.path.insert(0, 'tools'); import build; build.generate()"], cwd=firmware)
+        stage("runner-regressions", [sys.executable, "-m", "unittest", "discover", "-s", "ci", "-p", "test_*.py", "-v"],
+              command_env={**env, "FELUCCA_TEST_FIRMWARE": str(firmware), "FELUCCA_TEST_FIRMWARE_REVISION": revision})
+        firmware_env = firmware_environment(env)
+        stage("generate", [sys.executable, "-c", "import sys; sys.path.insert(0, 'tools'); import build; build.generate()"],
+              cwd=firmware, command_env=firmware_env)
         flags = ["-w", "-Ibuild/gen", "-Ifirmware/src"]
-        stage("compile-descriptors", [*cc, *flags, "tests/descdump.c", "-lm", "-o", str(fixtures / "descdump")], cwd=firmware)
+        stage("compile-descriptors", [*cc, *flags, "tests/descdump.c", "-lm", "-o", str(fixtures / "descdump")],
+              cwd=firmware, command_env=firmware_env)
         for name, extra in [("desc", []), ("desc-legacy-web", ["--legacy-web-mock"])]:
-            stage(name, [str(fixtures / "descdump"), *extra], stdout=fixtures / (name + ".json"))
+            stage(name, [str(fixtures / "descdump"), *extra], stdout=fixtures / (name + ".json"), command_env=firmware_env)
         for name, extra in [("menu", []), ("menu-nocpu2", ["-DFELUCCA_CPU2=0"])]:
             binary = fixtures / name
-            stage("compile-" + name, [*cc, *flags, *extra, "tests/editor_test.c", "-lm", "-o", str(binary)], cwd=firmware)
-            env["MENU_JSON"] = str(fixtures / (name + ".json"))
-            stage(name, [str(binary)], cwd=firmware)
-        env.pop("MENU_JSON")
+            stage("compile-" + name, [*cc, *flags, *extra, "tests/editor_test.c", "-lm", "-o", str(binary)],
+                  cwd=firmware, command_env=firmware_env)
+            stage(name, [str(binary)], cwd=firmware,
+                  command_env={**firmware_env, "MENU_JSON": str(fixtures / (name + ".json"))})
         results["fixtures"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(fixtures.glob("*.json"))}
         env.update(FELUCCA_DESC=str(fixtures / "desc-legacy-web.json"), FELUCCA_TOOLS=str(firmware / "tools"),
                    FELUCCA_ROOT=str(firmware), FELUCCA_FIRMWARE=str(firmware),

@@ -62,6 +62,8 @@ full and retained-editor descriptor dumps, and normal/CPU2=0 MENU fixtures, then
 backup, settings, app/build/generator, catalog and legacy-migration checks. The retained editor mocks use the
 firmware's explicit `descdump --legacy-web-mock` scope for engine IDs 0..13. Native comparisons keep their
 firmware-produced expected data; the runner never rewrites client tables or goldens.
+Firmware commands resolve their identity from the pinned firmware checkout, with the consumer PR's source
+identity variables removed from those subprocesses. The client job's provenance and step-summary context remain intact.
 
 It also starts a temporary loopback server and runs every `test_fixtures/menu/*.html` page in headless Chrome,
 using a separate temporary browser profile. Each page must report PASS. Set `CHROME_BIN` to the browser executable
@@ -71,7 +73,7 @@ These checks exercise mock MIDI; they do not establish real USB, audio, installa
 Read `build/ci/summary.json` first; it records revisions, tool versions, fixture hashes, results and skips. Full
 logs and browser DOM output are beside it and are uploaded by CI for seven days. Required generated-input
 comparisons may not skip. Normal invocations invalidate the previous summary before startup checks; a missing
-checkout, wrong revision or failed uv startup records a failed attempt. Printing the pin creates no artifacts.
+checkout, wrong revision, missing tool or failed uv startup records a failed attempt with its cause. Printing the pin creates no artifacts.
 The retained classic editor's absent MENU UI, FM6 bank sender, MIDI LEARN and CUSTOM
 palette checks remain explicit feature skips. The historical package comparison also remains an explicit skip:
 it needs an official `FM-1_v15.fwsc` and target-build inputs that this host-only gate does not provide. A green
