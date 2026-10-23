@@ -14,7 +14,7 @@ sent to a server. The site is published at https://hugelton.github.io/Felucca/.
 
 ```sh
 python3 serve.py            # http://localhost:8766/app/index.html?mock=1
-node test_settings.mjs      # MENU replies, sparse IDs and AUTO OFF constraints (mock only)
+node test_settings.mjs      # MENU replies, sparse IDs; FELUCCA_ROOT adds actual native settings/backup checks
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
 node test_backup.mjs        # the full backup
@@ -118,10 +118,28 @@ ALL DARK must be later than an enabled AUTO OFF timer. Rejected changes restore 
 RAM-only and deferred-save replies retain the applied value and display their existing save-status messages.
 Saved changes display "Saved", replacing earlier warnings in the status bar. Previous messages remain in the log.
 Device-side changes appear when Settings is reopened. Older firmware keeps its advertised controls.
-Firmware advertising the unified native UI (`INFO` preferences bit 4) hides the retired LARGE row in the new
-editor. Without that capability, LARGE remains available; the descriptor, legacy setting and backup bytes are retained.
-Use `app/index.html?mock=1` for unified UI firmware, or add `&noUnifiedUI=1` for its older LARGE control.
-The browser-only `test_fixtures/menu/unified.html` fixture checks both connections and must report PASS.
+Tagged `INFO` preferences retire controls independently: bit 4 hides LARGE and bit 5 hides STYLE. Without the
+respective capability the older control remains available. Their descriptors, historical values and opaque backup
+bytes stay unchanged; neither bit is a writable preference slot. GRAPH appears only when firmware advertises its
+MENU descriptor, using the supplied SCOPE / TURN / CURVE / STILL values. The editor sends its logical MENU value;
+firmware owns defaults, storage and native drawing.
+
+The baseline `app/index.html?mock=1` models the prior unified-size profile (LARGE hidden, STYLE available), while
+`&noUnifiedUI=1` retains both older controls. The explicit future-contract `&graph=1` profile advertises both
+retirements and GRAPH, initially TURN. It does not change the reviewed firmware CI pin or baseline mock tables.
+`test_fixtures/menu/unified.html` checks independent bits, old/new reconnects, refresh, unknown bit 64, hidden
+historical values and GRAPH controls; it must report PASS.
+
+With generated firmware headers and `FELUCCA_ROOT` set, `node test_settings.mjs` also compiles the real producer's
+editor harness for CPU2 on/off and writes fresh response fixtures under `build/display-contract/`. It checks stable
+IDs, informational-slot refusal, logical GRAPH writes when present, preservation of ANIM and other settings bytes,
+and opaque settings backup wire/C import-export round trips. The native no-flash harness returns applied-in-RAM
+status; mock scenarios separately cover saved/deferred statuses. Without the firmware checkout that native check
+prints an explicit skip; CI requires the input. After the firmware-backed suite or full gate, open
+`test_fixtures/menu/display-contract.html` and expect PASS from actual C response replay. An optional
+`?compare=<40-character previously captured revision>` additionally replays its archived on/off fixtures across
+reconnections; missing requested data fails. These browser/host checks do not qualify physical USB, flash durability
+or the native GRAPH display on an FM-1.
 
 For a browser regression without hardware, run `python3 serve.py 8774` and open
 `http://localhost:8774/test_fixtures/menu/settings.html`. It must report PASS. This fixture creates only a

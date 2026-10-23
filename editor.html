@@ -478,7 +478,7 @@ const parse = {
     const trailer = a.slice(r.i);
     if (trailer[0] === 16) o.chainRows = 16;       /* existing v6 SONG capability */
     if (trailer.length >= 4 && trailer[0] === 16 && trailer[1] === 0x55 && trailer[2] === 1)
-      o.uiCaps = trailer[3] & 31;                 /* tagged preferences; never interpret old PR bytes as SONG */
+      o.uiCaps = trailer[3] & 63;                 /* tagged preferences; never interpret old PR bytes as SONG */
     o.motionMax = 0; o.chance = false; o.backupCaps = 0;
     if (o.uiCaps && trailer[4] === 0x4d && trailer[5] === 1 && trailer[6] === 64) {
       o.motionMax = 64; o.chance = trailer[7] === 1;
@@ -526,7 +526,7 @@ const parse = {
     return o;
   },
   [CMD.UI_STATE](a) {
-    const r = new Reader(a), o = { caps: r.b() & 31, palette: r.b(), font: r.b(), monitor: r.b(), filter: r.b() };
+    const r = new Reader(a), o = { caps: r.b() & 63, palette: r.b(), font: r.b(), monitor: r.b(), filter: r.b() };
     const u28 = () => r.b() | r.b() << 7 | r.b() << 14 | r.b() << 21;
     o.favoriteSig = u28(); o.bankSig = u28(); return o;
   },

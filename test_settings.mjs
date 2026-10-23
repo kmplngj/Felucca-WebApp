@@ -2,17 +2,20 @@
 // MENU contract and applied/rejected replies. Mock MIDI only; never opens hardware.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { nativeDisplayContract } from "./test_display_contract.mjs";
 import { Device } from "./app/src/device.js";
 import { makeMockDevice, v14enc } from "./app/src/proto.js";
 
 for (const options of [{}, { noFlash: true }, { deferSettings: true }, { noCpu2: true }, { noAutoOff: true }]) {
-  const mock = makeMockDevice({ auto: false, ...options }), dev = new Device(mock.access);
+  const fixture = options.noCpu2 ? process.env.FELUCCA_MENU_NOCPU2 : Object.keys(options).length === 0 ? process.env.FELUCCA_MENU : null;
+  const native = fixture ? JSON.parse(readFileSync(fixture, "utf8")) : null;
+  const graph = !!native?.some((item) => item.id === 34);
+  const mock = makeMockDevice({ auto: false, graph, ...(graph ? { uiCaps: 57 } : {}), ...options }), dev = new Device(mock.access);
   await dev.open();
   try {
-    const fixture = options.noCpu2 ? process.env.FELUCCA_MENU_NOCPU2 : Object.keys(options).length === 0 ? process.env.FELUCCA_MENU : null;
     if (fixture) {
       const normalize = ({ index, ...item }) => ({ ...item, names: item.names || [] });
-      assert.deepEqual(dev.menu.map(normalize), JSON.parse(readFileSync(fixture, "utf8")).map(normalize));
+      assert.deepEqual(dev.menu.map(normalize), native.map(normalize));
       console.log(`settings: exact native MENU comparison passed (${dev.menu.length} descriptors)`);
     }
     const rc = options.noFlash ? 3 : options.deferSettings ? 4 : 0;
@@ -29,7 +32,7 @@ for (const options of [{}, { noFlash: true }, { deferSettings: true }, { noCpu2:
     assert.equal(dev.menu.find((m) => m.id === 17).names.length, 13);
     assert.equal(dev.menu.find((m) => m.id === 33).names.length, 5);
     assert.equal(dev.menu.some((m) => m.id === 32), !options.noCpu2);
-    assert.equal(dev.menu.at(-1).id, 33);
+    assert.equal(dev.menu.at(-1).id, graph ? 34 : 33);
     for (let stage = 0; stage <= 12; stage++) {
       await dev.menuSet(33, 0);
       assert.equal(await dev.menuSet(17, stage), rc);
@@ -62,20 +65,26 @@ for (const options of [{}, { noFlash: true }, { deferSettings: true }, { noCpu2:
   } finally { dev.close(); mock.stop(); }
 }
 // Reconnect old/new firmware with the same version string; descriptors keep their stable IDs.
-for (const options of [{}, { noUnifiedUI: true }, { uiCaps: 29 }, { uiCaps: 61 }]) {
+for (const options of [{}, { noUnifiedUI: true }, { uiCaps: 41 }, { graph: true, uiCaps: 57 }, { graph: true, uiCaps: 61 }, { graph: true, uiCaps: 125 }, { uiCaps: 93 }]) {
   const mock = makeMockDevice({ auto: false, ...options }), dev = new Device(mock.access);
   await dev.open();
   try {
-    const caps = options.noUnifiedUI ? 9 : (options.uiCaps ?? 25) & 31;
+    const caps = options.noUnifiedUI ? 9 : (options.uiCaps ?? 25) & 63;
     assert.equal(dev.info.uiCaps, caps);
     assert.equal(dev.preferences.state.caps, caps);
+    assert.equal(dev.menu.some((m) => m.id === 34), !!options.graph);
+    for (const id of [4, 5]) assert.equal(await dev.changePreference(id, 1), 1);
+    const style = dev.menu.find((m) => m.id === 1);
+    assert.deepEqual(style.names, ["FLAT", "LINE"]);
     const descriptor = dev.menu.find((m) => m.id === 2);
     assert.equal(descriptor.name, "LARGE");
     assert.deepEqual(descriptor.names, ["OFF", "ON"]);
     const ids = dev.menu.map((m) => m.id);
     for (const value of [1, 0]) {
+      assert.equal(await dev.menuSet(1, value), 0);
       assert.equal(await dev.menuSet(2, value), 0); // Historical clients may still write it.
       await dev.readMenu(); await dev.syncPreferences(true);
+      assert.equal(dev.menu.find((m) => m.id === 1).value, value);
       assert.equal(dev.menu.find((m) => m.id === 2).value, value);
       assert.deepEqual(dev.menu.map((m) => m.id), ids);
       assert.equal(dev.info.uiCaps, caps);
@@ -92,5 +101,26 @@ for (const options of [{}, { noUnifiedUI: true }, { uiCaps: 29 }, { uiCaps: 61 }
     assert.equal(dev.menu.find((m) => m.id === 4).name, "LEDS");
   } finally { dev.close(); mock.stop(); }
 }
+// GRAPH is appended only in an explicit new-contract profile; baseline tables remain f8-compatible.
+for (const options of [{}, { noCpu2: true }, { noFlash: true }, { deferSettings: true }]) {
+  const mock = makeMockDevice({ auto: false, graph: true, uiCaps: 57, ...options }), dev = new Device(mock.access);
+  await dev.open();
+  try {
+    const row = dev.menu.find((m) => m.id === 34), ids = dev.menu.map((m) => m.id);
+    assert.equal(dev.menu.length, options.noCpu2 ? 34 : 35);
+    assert.deepEqual(row.names, ["SCOPE", "TURN", "CURVE", "STILL"]); assert.equal(row.value, 1);
+    const rc = options.noFlash ? 3 : options.deferSettings ? 4 : 0;
+    for (const value of [0, 1, 2, 3, 99, -1]) {
+      assert.equal(await dev.menuSet(34, value), rc); await dev.readMenu();
+      assert.equal(dev.menu.find((m) => m.id === 34).value, Math.max(0, Math.min(3, value)));
+      assert.deepEqual(dev.menu.map((m) => m.id), ids);
+      assert.equal(dev.menu.find((m) => m.id === 3).value, 0);
+    }
+    assert.equal(await dev.menuSet(17, 1), rc); assert.equal(await dev.menuSet(33, 1), 2);
+    assert.equal(dev.menu.find((m) => m.id === 34).value, 0, "timer refusal leaves GRAPH unchanged");
+  } finally { dev.close(); mock.stop(); }
+}
 console.log("settings: unified/legacy reconnect, INFO/UI_STATE, refresh and stable MENU IDs passed");
 console.log("settings: applied rc0/3/4, refused rc2, all timers/LEDS, sparse IDs, old firmware and errors passed");
+
+nativeDisplayContract();
