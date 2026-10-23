@@ -83,19 +83,28 @@ function choiceRow(d, value, onset, opt, label) {
   }
   const lab = el("span", { class: "l" }), name = el("span", { class: "lbl", text: label });
   const row = el("div", { class: "gauge choice" }, val, lab, select);
-  let shown;
+  let shown, draft = false, pending = null;
   const show = (v) => {
     const [x, u] = fmt(d, v, opt.rename); put(val, document.createTextNode(x), u ? el("small", { text: u }) : null); select.value = String(v);
     const i = typeof opt.icon === "function" ? opt.icon(v) : opt.icon;
     if (i !== shown || !lab.firstChild) { shown = i; put(lab, i ? ic(i) : null, name); }
   };
-  select.addEventListener("change", () => { show(+select.value); help(label, val.textContent); onset(+select.value, true); });
+  select.addEventListener("input", () => { draft = true; });
+  select.addEventListener("change", () => { draft = false; pending = null; show(+select.value); help(label, val.textContent); onset(+select.value, true); });
+  select.addEventListener("blur", () => { draft = false; if (pending != null) { show(pending); pending = null; } });
   select.addEventListener("focus", () => help(label, val.textContent));
   select.addEventListener("pointerenter", () => help(label, val.textContent));
   show(value);
   return {
     el: row, desc: d,
-    update(v, pulse = true) { if (document.activeElement === select || v == null || String(v) === select.value) return; show(v); if (pulse) flash(row); },
+    /* A committed MENU reply reconciles even with keyboard focus. A newer native-picker
+       draft stays intact; if cancelled, blur restores the last confirmed value. */
+    update(v, pulse = true, settled = false) {
+      if (v == null) return;
+      if (settled && draft) { pending = v; return; }
+      if ((!settled && document.activeElement === select) || String(v) === select.value) return;
+      show(v); if (pulse) flash(row);
+    },
     busy: () => document.activeElement === select,
   };
 }

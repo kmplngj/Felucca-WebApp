@@ -434,7 +434,7 @@ function readEngineCatalog(trailer, info) {
   info.backupExtraCaps = 0;
   if (trailer.length === 1 && trailer[0] !== 0x49 && trailer[0] !== 0x58) return; // historical untagged PR flag
   const lengths = { 0x55: 1, 0x4d: 2, 0x42: 1, 0x46: 2, 0x53: 1, 0x50: 1, 0x4E: 1,
-    0x52: 1, 0x4C: 1, 0x41: 2, 0x54: 1, 0x57: 1, 0x56: 1, 0x43: 1, 0x4B: 1, 0x45: 1, 0x58: 1 };
+    0x52: 1, 0x4C: 1, 0x41: 2, 0x54: 1, 0x57: 1, 0x56: 1, 0x43: 1, 0x4B: 1, 0x45: 1, 0x58: 1, 0x59: 1 };   // 0x59: #456 raw store export (the new editor reads it)
   for (let q = trailer[0] === 16 ? 1 : 0; q < trailer.length;) {
     const tag = trailer[q];
     if (tag === 0x49) {

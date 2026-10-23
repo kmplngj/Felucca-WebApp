@@ -6,7 +6,7 @@
 // and the edits. No DOM: the page listens (on) and calls; the tests drive it against the mock device.
 // The behaviour is editor.html's (connect, load, onPush, keepAlive, the 400 ms poll, selfLoad), moved here.
 
-import { captureBackup, captureObject, conditionalProjects, projectFile, putObject, readBackup, readProject, restoreBackup, assertBackupCompatible } from "../../fm1backup.js";
+import { captureBackup, captureObject, conditionalProjects, projectFile, putObject, readBackup, readProject, restoreBackup, assertBackupCompatible, RAW_CMD, rawManifest, captureRawObject, captureRawStore } from "../../fm1backup.js";
 import { CMD, F, FLASH_OPT, engineAvailable, catalogLabel, FM6, fm6Bank, midiLearn, Link, parseMotionAll, P_CHORD, SMP, auditionPatch, bank, capturePatch, fromDigital, mixer, parse, paramKeys, readDeviceMenu, readDevicePreferences, req, reservedFm4, startWatch, upName } from "./proto.js";
 
 export const isFelucca = (p) => /felucca/i.test(p.name || "") && p.state !== "disconnected";
@@ -491,7 +491,7 @@ export class Device {
   /* (and a 1.5 project, FUN10 of 111 parameters, byte 66, on 1.2 .. 1.4: more parameters than this device has) */
   backupTooNew(archive) {
     const proj = (archive.objects || []).filter((o) => o.id <= 5 && o.id !== 1 && o.size === 3840);
-    return (!this.info.motionCap && proj.length > 0) || proj.some((o) => o.bytes && String.fromCharCode(...o.bytes.slice(0, 4)) === "FUNA" && o.bytes[66] > this.info.pcount);
+    return (!this.info.motionCap && proj.length > 0) || proj.some((o) => o.bytes && o.bytes.length === 3840 && new DataView(o.bytes.buffer, o.bytes.byteOffset, o.bytes.byteLength).getUint32(0, true) === 0x46554e41 && o.bytes[66] > this.info.pcount);
   }
   /* a single project (Discussion #70): slot k (0..3 = A..D, object 2 + k) to a file, a file to slot k; the backup's
      object as it is (BACKUP_GET / BACKUP_PUT: INFO 42 bit 0 / bit 1) */
@@ -514,12 +514,31 @@ export class Device {
       return true;
     });
   }
+  /* #456 raw store export (INFO 59 01 bit 0: STORE_LIST / STORE_GET): every stored object as flash holds it, also what
+     this firmware cannot load. Read only: these send nothing that writes, and nothing is converted or uploaded here */
+  rawCaps() { return this.info ? this.info.rawStoreCaps | 0 : 0; }
+  /* -> [{type, state, copy, size, crc, seq, magic}] */
+  storeList() {
+    if (!(this.rawCaps() & 1)) return Promise.resolve(undefined);
+    return this.op(async () => rawManifest(await this.rq([RAW_CMD.LIST, []], { timeout: 3000, retries: 0 })));
+  }
+  /* one object's bytes exactly as stored -> {type, state, ..., bytes} */
+  storeObject(type) {
+    if (!(this.rawCaps() & 1)) return Promise.resolve(undefined);
+    return this.op(() => captureRawObject((r, o) => this.rq(r, o), type));
+  }
+  /* every object -> the felucca-store file (Felucca web/fm1backup.js captureRawStore) */
+  storeAll(onProgress) {
+    if (!(this.rawCaps() & 1)) return Promise.resolve(undefined);
+    return this.op(() => captureRawStore((r, o) => this.rq(r, o), this.info.version, onProgress));
+  }
   /* 1.5.5: the backup's projects this device cannot open (a step condition; no INFO 4B 01 here) -> their ids */
   backupConditional(archive) { return this.info.cond ? [] : conditionalProjects(archive); }
   /* skip: object ids left out (they stay as they are on the device) */
   backupRestore(archive, onProgress, skip = []) {
-    try { assertBackupCompatible(archive, this.info); } catch (e) { this.emit("error", e); return Promise.resolve(false); }
+    try { archive = readBackup(archive); assertBackupCompatible(archive, this.info); } catch (e) { this.emit("error", e); return Promise.resolve(false); }
     if (this.backupTooNew(archive)) { this.emit("error", new Error("backupNewer")); return Promise.resolve(false); }
+    if (this.backupConditional(archive).some((id) => !skip.includes(id))) { this.emit("error", new Error("condProjectNo")); return Promise.resolve(false); }
     return this.op(async () => {
       await restoreBackup((r, o) => this.rq(r, o), archive, onProgress, { skip, info: this.info });
       await this.load();
@@ -710,7 +729,7 @@ export class Device {
     if (items) { this.menu = items; this.emit("menu", items); }
     return this.menu;
   }
-  /* -> rc (as UI_SET: 0 saved, 3 not saved, 4 after STOP, 1 refused); USB SERIAL changed: the device leaves the bus
+  /* -> rc (as UI_SET: 0 saved, 3 not saved, 4 after STOP, 1 unknown, 2 refused timer order); USB SERIAL changed: the device leaves the bus
      and comes back (every USB port), so this connection ends ("usb") and the page connects again */
   async menuSet(id, value) {
     await this.idle();
@@ -718,11 +737,13 @@ export class Device {
     const before = m ? m.value : null;
     const rc = await this.op(async () => {
       const r = parse[CMD.MENU_SET](await this.rq(req.menuSet(id, value), FLASH_OPT));
-      if (m && !r.rc) m.value = r.value;
-      if (id === 0 && !r.rc) await this.syncPreferences();   /* (COLOR is the display preference 0) */
+      /* 3/4 applied too; 2 refuses a timer pair and returns its unchanged actual value.
+         rc 1 only echoes the request, so it is never authoritative. */
+      if (m && [0, 2, 3, 4].includes(r.rc)) m.value = r.value;
+      if (id === 0 && [0, 3, 4].includes(r.rc)) await this.syncPreferences();   /* (COLOR is the display preference 0) */
       return r.rc;
     });
-    if (m && m.name === "USB SERIAL" && rc === 0 && m.value !== before) this.close("usb");
+    if (m && m.name === "USB SERIAL" && [0, 3, 4].includes(rc) && m.value !== before) this.close("usb");
     else this.emit("menu", this.menu);
     return rc;
   }

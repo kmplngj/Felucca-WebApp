@@ -191,7 +191,7 @@ const until = async (cond, ms = 2000) => { const t = Date.now(); while (!cond() 
     ok(pal.hex(0xffff) === "#ffffff" && pal.fromHex("#ffffff") === 0xffff && pal.fromBytes(...pal.bytes(0xce59)) === 0xce59 && pal.readable(pal.BUILTIN[6].c), "1.6: colour conversions, the readable rule");
     dd.close(); dp.stop();
   }
-  const fun = (np) => { const b = new Uint8Array(3840); b.set([0x46, 0x55, 0x4E, 0x41]); b[66] = np; return { id: 2, size: 3840, bytes: b }; };
+  const fun = (np) => { const b = new Uint8Array(3840); b.set([0x41, 0x4E, 0x55, 0x46]); b[66] = np; return { id: 2, size: 3840, bytes: b }; };
   ok(!d.backupTooNew({ objects: [fun(111)] }), "1.5: a 1.5 project restores on 1.5");
   d.info.pcount = 104;
   ok(d.backupTooNew({ objects: [fun(111)] }) && !d.backupTooNew({ objects: [fun(104)] }), "1.5: a 1.5 project (111) is kept from 1.4 firmware (104), a 1.4 one is not");
@@ -257,7 +257,7 @@ const until = async (cond, ms = 2000) => { const t = Date.now(); while (!cond() 
   let bad = ""; try { readProject(JSON.stringify({ ...file, object: { ...file.object, crc: file.object.crc ^ 1 } })); } catch (e) { bad = e.message; }
   ok(/checksum/.test(bad), "#70: a damaged file is refused before anything is sent");
   d.close();
-  const fun = (cond) => { const b = new Uint8Array(3840); b.set([0x46, 0x55, 0x4E, 0x41]); b[66] = 111; if (cond) b[68 + 111 + 2 + 8] = 104; return b; };
+  const fun = (cond) => { const b = new Uint8Array(3840); b.set([0x41, 0x4E, 0x55, 0x46]); b[66] = 111; if (cond) b[68 + 111 + 2 + 8] = 104; return b; };
   const om = proto.makeMockDevice({ auto: false, noCond: true }), o = new Device(om.access);
   await o.open();
   ok(o.projectRefusal({ size: 3840, bytes: fun(true) }) === "cond" && o.projectRefusal({ size: 3840, bytes: fun(false) }) === ""
@@ -270,7 +270,7 @@ const until = async (cond, ms = 2000) => { const t = Date.now(); while (!cond() 
   /* 1.5.5: a backup's projects with step conditions, found in FUN10 (the chance byte 102..112), skipped on firmware
      without conditions (only when asked: the restore leaves them out, the rest goes as before) */
   const { conditionalProjects } = await import("./fm1backup.js");
-  const fun10 = (cond) => { const b = new Uint8Array(3840); b.set([0x46, 0x55, 0x4E, 0x41]); b[66] = 111;
+  const fun10 = (cond) => { const b = new Uint8Array(3840); b.set([0x41, 0x4E, 0x55, 0x46]); b[66] = 111;
     const base = 68 + 2 * (111 + 2 + 576) + 111 + 2;                   /* (track 3, step 5) */
     b[base + 5 * 9 + 8] = cond ? 105 | 128 : 100; return b; };
   const arc = { objects: [{ id: 0, size: 3840, bytes: fun10(false) }, { id: 1, size: 10, bytes: new Uint8Array(10) },
@@ -1068,6 +1068,11 @@ function dir0() { return mkdtempSync(join(tmpdir(), "felucca-tokens-")); }
   ok(/url\("fonts\/InterTight-subset\.ttf"\)/.test(page) && /url\("fonts\/fukiai\.ttf"\)/.test(page) && /fonts\/OFL\.txt/.test(page) && /fonts\/FUKIAI-LICENSE\.txt/.test(page),
     "build: the fonts and their licences beside the page (fonts/)");
 }
+
+await import("./test_settings.mjs");
+
+// Keep the independent firmware-byte regression in the customary app test entry point.
+await import("./test_project_import.mjs");
 
 console.log(failed ? `\n${failed} FAILED` : "\nall ok");
 process.exit(failed ? 1 : 0);

@@ -3,7 +3,7 @@
 // Public updater contract, fake devices and time only: node test_ota.mjs
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { Updater, pack7 } from "./fm1ota.js";
 import { logicalImage, updateLoaderFor, validateStockPackage } from "./fm1pkg.js";
 import { customImage } from "./test_ota_helpers.mjs";
@@ -91,7 +91,7 @@ try {
   await rejects(() => unexpected.install(image, "FM-1_900"), "incompatible");
   assert.equal(unexpected.data, 1); // no loader write
   const stockPath = process.env.FELUCCA_STOCK;
-  if (stockPath && existsSync(stockPath)) {
+  if (stockPath) {
     const bytes = new Uint8Array(readFileSync(stockPath));
     const stock = await validateStockPackage(bytes);
     assert.equal(await updateLoaderFor(logicalImage(bytes), stock.product), "ota-FM-1_015");
@@ -106,6 +106,6 @@ try {
     const corrupt = new FakeUpdater("ota-FM-1_015", stock.product);
     await rejects(() => corrupt.resume(changed, null, stock.product), "badpkg");
     assert.equal(corrupt.probes + corrupt.upgrades + corrupt.data, 0);
-  } else console.log("SKIP official V15 success: set FELUCCA_STOCK to the unmodified official file");
+  } else console.log("updater: official V15 success: skipped (set FELUCCA_STOCK to the unmodified official file)");
 } finally { globalThis.setTimeout = originalTimer; }
 console.log("updater contract: all ok");

@@ -354,6 +354,21 @@ input.text.num { width: 6.5em; min-height: 32px; background: var(--surf); }
 .songrow.sect > .gauge { grid-column: 2; grid-row: 2; }
 .songrow.sect > .iconbtn { grid-column: 3; grid-row: 1; }
 .slot .acts { flex-wrap: wrap; }
+/* STORED (#456): the raw store's objects, a state each, the migration's report */
+.rawnote { margin: 0 0 8px; font-size: .75rem; color: var(--mid); }
+.rawnote.loss, .rawlog li.loss, .rawres p.loss { color: var(--accent); }
+.rawlist { display: grid; gap: 6px; margin-top: 8px; }
+.rawobj { background: var(--bg); border-radius: var(--r-s); padding: 8px; display: grid; gap: 6px; }
+.rawrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; }
+.rawrow .nm { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rawrow .meta { grid-column: 1; font-size: .6875rem; color: var(--mid); overflow-wrap: anywhere; }
+.rawrow .rowacts { grid-column: 2; grid-row: 2; justify-content: flex-end; gap: 4px; flex-wrap: wrap; }
+.rawrow .tag.state { justify-self: end; }
+.rawrow .tag.legacy, .rawrow .tag.damaged { color: var(--accent); }
+.rawres { display: grid; gap: 6px; border-top: 1px solid var(--raise); padding-top: 6px; }
+.rawhead { display: flex; align-items: center; gap: 8px; }
+.rawhead b { flex: 1; font-weight: 600; }
+.rawlog { margin: 0; padding-left: 16px; font-size: .75rem; display: grid; gap: 2px; max-height: 240px; overflow: auto; }
 
 /* ---- 6-OP ---- */
 .card h3.sub { margin: 12px 0 6px; font-size: .6875rem; font-weight: 600; letter-spacing: .06em; color: var(--mid); }

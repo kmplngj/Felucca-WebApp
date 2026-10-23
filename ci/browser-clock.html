@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<html lang="en"><meta charset="utf-8"><title>Browser clock and IndexedDB control</title>
+<p id="result">Running clock control…</p>
+<script>
+// Real IndexedDB completes first; an external wall-clock controller releases its delivery barrier.
+const state = globalThis.clockControl = { stored: false, release: false };
+const request = indexedDB.open("felucca-clock-control", 1);
+request.onupgradeneeded = () => request.result.createObjectStore("values");
+request.onerror = () => { document.querySelector("#result").textContent = "FAIL: IndexedDB open"; };
+request.onsuccess = () => {
+  const db = request.result, tx = db.transaction("values", "readwrite");
+  tx.objectStore("values").put("native transaction", "fixture");
+  tx.oncomplete = () => { state.stored = true; db.close(); };
+  tx.onerror = () => { document.querySelector("#result").textContent = "FAIL: IndexedDB transaction"; };
+};
+(async () => {
+  const end = Date.now() + 10000;
+  while (!(state.stored && state.release)) {
+    if (Date.now() >= end) {
+      document.querySelector("#result").textContent = "FAIL: IndexedDB delivery deadline";
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  document.querySelector("#result").textContent = "PASS: IndexedDB delivery within real deadline";
+})();
+</script></html>
