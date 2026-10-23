@@ -32,7 +32,12 @@ const until = async (fn, message) => {
   }
 };
 try {
-  await until(() => frame.contentDocument?.querySelector("#settings")?.onclick, "editor ready");
+  // LIVE is emitted before adoption finishes; Disconnect is enabled after adoption and rendering.
+  await until(() => {
+    const doc = frame.contentDocument, connect = doc?.querySelector("#connect");
+    return doc?.querySelector("#settings")?.onclick && connect?.disabled === false &&
+      doc.querySelector("#state-t")?.textContent.startsWith("LIVE · ");
+  }, "mock connection ready");
   watchErrors();
   const doc = frame.contentDocument;
   doc.querySelector("#settings").click();
