@@ -4,7 +4,7 @@
 <p id="result">Running clock control…</p>
 <script>
 // Real IndexedDB completes first; an external wall-clock controller releases its delivery barrier.
-const state = globalThis.clockControl = { stored: false, release: false };
+const state = globalThis.clockControl = { stored: false, release: false, started: performance.now() };
 const request = indexedDB.open("felucca-clock-control", 1);
 request.onupgradeneeded = () => request.result.createObjectStore("values");
 request.onerror = () => { document.querySelector("#result").textContent = "FAIL: IndexedDB open"; };

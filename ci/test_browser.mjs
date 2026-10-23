@@ -9,7 +9,7 @@ import { runFixture } from "./browser.mjs";
 const [chrome, base] = process.argv.slice(2), controls = [];
 for (const mode of ["virtual-released", "real-released", "real-held"]) {
   const profile = await mkdtemp(join(tmpdir(), "felucca-clock-"));
-  let started, stored;
+  let started, stored, fixtureStarted;
   try {
     const outcome = await runFixture(chrome, `${base}/ci/browser-clock.html`, profile, {
       afterNavigate: async ({ send, sessionId, evaluate }) => {
@@ -21,7 +21,12 @@ for (const mode of ["virtual-released", "real-released", "real-held"]) {
           assert(performance.now() < readyEnd, "real IndexedDB transaction must complete before the clock comparison");
           await sleep(10);
         }
+        // Observe this case late on purpose: its deadline must still be anchored to the page's start.
+        if (mode === "real-held") await sleep(1500);
+        const sent = performance.now();
+        const age = await evaluate("performance.now() - globalThis.clockControl.started");
         started = performance.now();
+        fixtureStarted = (sent + started) / 2 - age;
         let timer;
         if (mode !== "real-held") timer = setTimeout(() => {
           evaluate("globalThis.clockControl.release = true").catch(() => {});
@@ -41,9 +46,9 @@ for (const mode of ["virtual-released", "real-released", "real-held"]) {
     } else {
       assert.equal(outcome.result, "FAIL: IndexedDB delivery deadline");
       if (mode === "virtual-released") assert(elapsed < 1900, "virtual time must expose the premature deadline");
-      else assert(elapsed >= 9000, "a held delivery still fails the original ten-second real deadline");
+      else assert(outcome.completedAt - fixtureStarted >= 9000, "a held delivery still fails the original ten-second real deadline");
     }
-    controls.push({ mode, stored, elapsed_ms: Math.round(elapsed), result: outcome.result });
+    controls.push({ mode, stored, elapsed_ms: Math.round(elapsed), fixture_elapsed_ms: Math.round(outcome.completedAt - fixtureStarted), result: outcome.result });
   } finally { await rm(profile, { recursive: true, force: true }); }
 }
 console.log(JSON.stringify(controls));
