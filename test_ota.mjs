@@ -32,6 +32,10 @@ for (const product of [undefined, null, "", "ota-FM-1_900", "FM-1_", "FM-1_hello
 }
 assert.equal(await updateLoaderFor(image, "FM-1_904"), "ota-FM-1_900");
 assert.equal(await updateLoaderFor(image, "FM-1_TEST_1.0"), "ota-FM-1_900");
+// Match the firmware's bounded 64-byte first-literal marker search, including its last valid position.
+assert.equal(await updateLoaderFor(customImage({ markerOffset: 0x78 }), "FM-1_900"), "ota-FM-1_900");
+await assert.rejects(() => updateLoaderFor(customImage({ marker: "FELUCCA-LOADER-X" }), "FM-1_900"), /Not a supported/);
+await assert.rejects(() => updateLoaderFor(customImage({ markerOffset: 0x88 }), "FM-1_900"), /Not a supported/);
 await assert.rejects(() => updateLoaderFor(image, "FM-1_015"));
 const damaged = image.slice(); damaged[0x250] ^= 1;
 await assert.rejects(() => updateLoaderFor(damaged, "FM-1_900"));

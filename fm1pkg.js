@@ -303,7 +303,7 @@ export async function updateLoaderFor(image, product) {
   if (!flash || flash.size !== 0x93000 || !loader || loader.off + 512 > image.length)
     throw new Error("Missing or unsupported flash.bin / ota.bin.");
   const b = image.subarray(loader.off, loader.off + loader.size), n = u32(b, 8);
-  const mark = new TextEncoder().encode("FELUCCA-LOADER-1\0");
+  const mark = new TextEncoder().encode("FELUCCA-LOADER-1");
   const own = Array.from({ length: 65 }, (_, i) => 0x48 + i).some((off) =>
     off + mark.length <= 0x48 + 64 && mark.every((v, i) => b[off + i] === v));
   if (b.length < 0x40 || crc16(b.subarray(2, 32)) !== u16(b, 0) || u32(b, 4) !== 0x20 || b[12] !== 0x41 ||

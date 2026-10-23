@@ -61,6 +61,8 @@ to that loader. A package product in the 9xx range does not establish loader com
 The `ota-FM-1_015` string in the firmware's update record does not describe the custom loader's handshake.
 An early rescue application answering `FM-1_…` follows the regular staging flow before its package's
 loader is checked. These rules describe existing loader recovery; they do not add a recovery command.
+The custom-loader marker is matched within the producer's first 64-byte literal window. Its following
+compressed LZ4 byte need not be NUL; that byte is not part of the marker contract.
 
 `node test_ota.mjs` exercises the contract without hardware, browser or wall-clock delays. Set
 `FELUCCA_STOCK=/path/to/FM-1.fwsc` to include digest-verified official V15 success cases; without
