@@ -189,7 +189,8 @@ def main():
         firmware_env = firmware_environment(env)
         stage("generate", [sys.executable, "-c", "import sys; sys.path.insert(0, 'tools'); import build; build.generate()"],
               cwd=firmware, command_env=firmware_env)
-        flags = ["-w", "-Ibuild/gen", "-Ifirmware/src"]
+        # Match tests/run_tests.sh host CC and fixture commands. GCC needs -O1 to discard unused target HAL paths.
+        flags = ["-O1", "-Wall", "-Wno-unused-function", "-w", "-Ibuild/gen", "-Ifirmware/src"]
         stage("compile-descriptors", [*cc, *flags, "tests/descdump.c", "-lm", "-o", str(fixtures / "descdump")],
               cwd=firmware, command_env=firmware_env)
         for name, extra in [("desc", []), ("desc-legacy-web", ["--legacy-web-mock"])]:

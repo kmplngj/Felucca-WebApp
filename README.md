@@ -62,6 +62,7 @@ full and retained-editor descriptor dumps, and normal/CPU2=0 MENU fixtures, then
 backup, settings, app/build/generator, catalog and legacy-migration checks. The retained editor mocks use the
 firmware's explicit `descdump --legacy-web-mock` scope for engine IDs 0..13. Native comparisons keep their
 firmware-produced expected data; the runner never rewrites client tables or goldens.
+Native fixture builds use the firmware test runner's host flags, including `-O1`.
 Firmware commands resolve their identity from the pinned firmware checkout, with the consumer PR's source
 identity variables removed from those subprocesses. The client job's provenance and step-summary context remain intact.
 
