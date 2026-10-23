@@ -37,6 +37,50 @@ JavaScript checks still run and this native check is explicitly skipped.
 
 The editor protocol is described in the firmware repository (`web/EDITOR_PROTOCOL.md`).
 
+## Continuous integration
+
+The **WebApp CI** workflow validates a candidate client on relevant pull requests and pushes to `main`.
+README-only changes do not schedule it. It uses the exact compatible firmware commit recorded in
+[`ci/firmware.json`](ci/firmware.json), including its engine submodule and locked Python build dependencies.
+Update that pin in a reviewed companion PR after the corresponding firmware contract has landed on `main`;
+normal runs never follow a moving firmware branch or an unmerged producer PR.
+
+To run the same gate locally, install Git, Node.js 22, Python 3.12, uv, a C compiler and Chrome or Chromium.
+No npm dependencies, JieLi toolchain, Docker, SDK, device or MIDI permission are needed. Use a separate clean
+firmware checkout: the runner verifies its revision and generates files under its ignored `build/` directory.
+From this repository:
+
+```sh
+git clone https://github.com/kmplngj/Felucca.git ../Felucca-ci
+git -C ../Felucca-ci checkout --detach "$(python3 ci/check.py --print-firmware-revision)"
+git -C ../Felucca-ci submodule update --init --recursive
+python3 ci/check.py --firmware ../Felucca-ci
+```
+
+`ci/check.py` enters `uv run --locked --group build` automatically. It generates current firmware headers,
+full and retained-editor descriptor dumps, and normal/CPU2=0 MENU fixtures, then runs both protocol suites,
+backup, settings, app/build/generator, catalog and legacy-migration checks. The retained editor mocks use the
+firmware's explicit `descdump --legacy-web-mock` scope for engine IDs 0..13. Native comparisons keep their
+firmware-produced expected data; the runner never rewrites client tables or goldens.
+
+It also starts a temporary loopback server and runs every `test_fixtures/menu/*.html` page in headless Chrome,
+using a separate temporary browser profile. Each page must report PASS. Set `CHROME_BIN` to the browser executable
+if it is not found automatically. Browser fixture failures and missing tools or generated inputs fail the gate.
+These checks exercise mock MIDI; they do not establish real USB, audio, installation or FM-1 behavior.
+
+Read `build/ci/summary.json` first; it records revisions, tool versions, fixture hashes, results and skips. Full
+logs and browser DOM output are beside it and are uploaded by CI for seven days. Required generated-input
+comparisons may not skip. The retained classic editor's absent MENU UI, FM6 bank sender, MIDI LEARN and CUSTOM
+palette checks remain explicit feature skips. The historical package comparison also remains an explicit skip:
+it needs an official `FM-1_v15.fwsc` and target-build inputs that this host-only gate does not provide. A green
+gate does not claim that comparison passed; its skip appears in the run summary.
+
+After the workflow is present on the default branch, **Actions > WebApp CI > Run workflow** supports manual runs.
+Leave `firmware_revision` empty for the recorded pin. An optional full 40-character firmware SHA performs a
+clearly marked test-only contract comparison; it does not change the pin or qualify a firmware release. For a
+new workflow's first PR, use its automatic pull-request run before merging, because GitHub only registers manual
+dispatch once the workflow exists on the default branch. No workflow here publishes, flashes or releases anything.
+
 ## Device settings
 
 The new editor builds Settings from the connected firmware's MENU descriptors, including all six LED
