@@ -222,7 +222,7 @@ async function connect() {
   try {
     if (!access) {
       if (MOCK) access = makeMockDevice({ legacy: QS.get("legacy") === "1", catalog: QS.get("catalog") === "1" || QS.get("raw") === "1", test14: QS.get("test14") === "1", omit: QS.has("omit") ? Number(QS.get("omit")) : undefined,
-        rawStore: QS.get("raw") === "1" }).access;   /* (&raw=1: the raw store export of #456, with demo legacy objects) */
+        rawStore: QS.get("raw") === "1", noUnifiedUI: QS.get("noUnifiedUI") === "1" }).access;   /* (&raw=1: the raw store export of #456, with demo legacy objects) */
       else if (!navigator.requestMIDIAccess) { sayK("nomidi"); return; }
       else { try { access = await navigator.requestMIDIAccess({ sysex: true }); } catch { sayK("denied"); return; } }
       access.onstatechange = onPortState;

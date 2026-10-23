@@ -135,16 +135,47 @@ async function editorMock() {
   ok(oldSong.chainRows === 16 && !oldSong.uiCaps, "editor: existing SONG firmware remains compatible without preference probes");
   const tagged = E.parse[E.CMD.INFO]([...baseInfo, 16, 0x55, 1, 11]);
   ok(tagged.chainRows === 16 && tagged.uiCaps === 11, "editor: tagged preference extension advertises its supported controls");
+  for (const caps of [0, 9, 13, 16, 25, 29, 31, 57, 127]) {
+    const taggedUI = E.parse[E.CMD.INFO]([...baseInfo, 16, 0x55, 1, caps]);
+    const stateUI = E.parse[E.CMD.UI_STATE]([caps, 2, 127, 1, 0, 1, 0, 0, 0, 2, 0, 0, 0]);
+    ok(taggedUI.uiCaps === (caps & 31) && stateUI.caps === (caps & 31) && stateUI.palette === 2 &&
+       stateUI.monitor === 1 && stateUI.favoriteSig === 1 && stateUI.bankSig === 2,
+       `editor: INFO/UI_STATE capability ${caps}: unified bit retained, unknown bits ignored`);
+  }
+  for (const trailer of [[16, 16], [16, 0x55], [16, 0x55, 1], [16, 0x55, 2, 25]]) {
+    let refused = false;
+    try { E.parse[E.CMD.INFO]([...baseInfo, ...trailer]); } catch (error) { refused = /Invalid or unsupported INFO capability block/.test(error.message); }
+    ok(refused, "editor: malformed/unsupported preference tag stops connection before rendering");
+  }
+  for (const options of [{ noUnifiedUI: true }, { uiCaps: 61 }]) {
+    const peer = E.makeMockDevice({ auto: false, ...options });
+    const input = [...peer.access.inputs.values()][0], output = [...peer.access.outputs.values()][0];
+    const connection = new E.Link((data) => output.send(data), { timeout: 300 });
+    input.onmidimessage = (event) => connection.receive(event.data);
+    try {
+      const connected = E.parse[E.CMD.INFO](await connection.request(E.req.info()));
+      const state = E.parse[E.CMD.UI_STATE](await connection.request(E.req.uiState()));
+      const expected = options.noUnifiedUI ? 9 : 29;
+      ok(connected.uiCaps === expected && state.caps === expected,
+         "editor: old/new mock INFO and UI_STATE agree, combined known bits survive unknown bits");
+      if (expected & 4) {
+        const monitor = E.parse[E.CMD.UI_SET](await connection.request(E.req.uiSet(2, 1)));
+        ok(monitor.rc === 0 && monitor.monitor === 1 && monitor.caps === expected,
+           "editor: monitor preference stays usable alongside unified/palette/favorites bits");
+      }
+    } finally { connection.close(); peer.stop(); }
+  }
   const pending = E.parse[E.CMD.FAV_SET]([4, 0, 0, 64, 1]);
   ok(pending.rc === 4 && pending.on && pending.engine === 0, "editor: queued favorite response is applied while waiting for STOP");
   const names = [];
   for (let e = 0; e < info.nengines; e++) names.push(E.parse[E.CMD.NAMES](await rq(E.req.names(e))).names);
   let prefs = await E.readDevicePreferences(rq, info, names);
-  ok(info.uiCaps === 9 && prefs.palettes.length === 10 && prefs.palettes[0] === "GREY" && prefs.palettes.includes("HI-CON") && prefs.palettes[8] === "NIGHT" && prefs.palettes[9] === "MONO",
-     "editor: preference capabilities (palette, favorites) and palette names");
+  ok(info.uiCaps === 25 && prefs.state.caps === 25 && prefs.palettes.length === 10 && prefs.palettes[0] === "GREY" && prefs.palettes.includes("HI-CON") && prefs.palettes[8] === "NIGHT" && prefs.palettes[9] === "MONO",
+     "editor: preference capabilities (palette, favorites, unified UI) and palette names");
   const pal = E.parse[E.CMD.UI_SET](await rq(E.req.uiSet(0, 2)));
   ok(pal.rc === 0 && pal.palette === 2, "editor: display preference 0 (palette) round trip");
   ok(E.parse[E.CMD.UI_SET](await rq(E.req.uiSet(0, 10))).rc === 1, "editor: out-of-range palette refused");
+  ok(E.parse[E.CMD.UI_SET](await rq(E.req.uiSet(4, 1))).rc === 1, "editor: informational unified UI bit is not a UI_SET slot");
   ok(E.parse[E.CMD.UI_SET](await rq(E.req.uiSet(1, 1))).rc === 2, "editor: the retired font weight answers not supported");
   ok(E.parse[E.CMD.FAV_SET](await rq(E.req.favSet(info.nengines, 31, true))).rc === 1, "editor: empty user slot cannot be favorited");
   await rq(E.req.favSet(0, 0, true));

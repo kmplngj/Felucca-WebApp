@@ -64,7 +64,8 @@ export function settingsScreen(root, ui) {
      the rows in id order; 1.0.4: one card); COLOR when the display card does not already show the theme */
   function menu() {
     /* (1.4's MIDI IN 21 and TUNE 22 are the project's ROUT and TUNE, shown with the globals above: once) */
-    const items = (dev.menu || []).filter((m) => !(m.id === 0 && dev.preferences && dev.preferences.state.caps & 1) && !(dev.dump && (m.id === 21 || m.id === 22)));
+    /* Tagged INFO bit 4 retires only the native size choice; keep its descriptor and stored value. */
+    const items = (dev.menu || []).filter((m) => !(m.id === 2 && dev.info.uiCaps & 16) && !(m.id === 0 && dev.preferences && dev.preferences.state.caps & 1) && !(dev.dump && (m.id === 21 || m.id === 22)));
     if (!items.length) return [];
     const tabs = [...new Set(items.map((m) => m.tab))].sort((x, y) => x - y);
     return tabs.map((tab) => {

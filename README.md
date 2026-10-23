@@ -46,6 +46,10 @@ ALL DARK must be later than an enabled AUTO OFF timer. Rejected changes restore 
 RAM-only and deferred-save replies retain the applied value and display their existing save-status messages.
 Saved changes display "Saved", replacing earlier warnings in the status bar. Previous messages remain in the log.
 Device-side changes appear when Settings is reopened. Older firmware keeps its advertised controls.
+Firmware advertising the unified native UI (`INFO` preferences bit 4) hides the retired LARGE row in the new
+editor. Without that capability, LARGE remains available; the descriptor, legacy setting and backup bytes are retained.
+Use `app/index.html?mock=1` for unified UI firmware, or add `&noUnifiedUI=1` for its older LARGE control.
+The browser-only `test_fixtures/menu/unified.html` fixture checks both connections and must report PASS.
 
 For a browser regression without hardware, run `python3 serve.py 8774` and open
 `http://localhost:8774/test_fixtures/menu/settings.html`. It must report PASS. This fixture creates only a

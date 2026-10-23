@@ -8,6 +8,7 @@
 // - MOTION set / delete refuse (rc 1) a step >= 64, a parameter that cannot be recorded and a value out of range
 // - INFO advertises the full backup (42 01 03) and BACKUP_LIST / GET / PUT answer as the firmware's (opt.noBackup: not)
 // - AUTO OFF: wire17 combined mode/time, WAKE31, conditional 2ND CORE32, ALL DARK33; rc2 timer order refused.
+// - #582: tagged uiCaps bit 4: unified native UI; hide legacy LARGE only (opt.noUnifiedUI: older firmware)
 // - 1.0.4: the MENU settings (INFO 4E 01 count, MENU_DESC 72, MENU_SET 73; opt.noMenu: not), the firmware's items (MENU)
 // - 1.0.5: ratchets (INFO 52 01 04, a byte after the chance in steps; opt.noRatchet: not), MENU tabs
 // - 1.1: parameter locks (INFO 4C 01 01, MOTION ops 5..7 with the kinds; opt.noLocks: not)
@@ -190,7 +191,7 @@ const parse = {
     const trailer = a.slice(r.i);
     if (trailer[0] === 16) o.chainRows = 16;       /* existing v6 SONG capability */
     if (trailer.length >= 4 && trailer[0] === 16 && trailer[1] === 0x55 && trailer[2] === 1)
-      o.uiCaps = trailer[3] & 15;                 /* tagged preferences; never interpret old PR bytes as SONG */
+      o.uiCaps = trailer[3] & 31;                 /* tagged preferences; never interpret old PR bytes as SONG */
     o.motionMax = 0; o.chance = false; o.backupCaps = 0;
     if (o.uiCaps && trailer[4] === 0x4d && trailer[5] === 1 && trailer[6] === 64) {
       o.motionMax = 64; o.chance = trailer[7] === 1;
@@ -238,7 +239,7 @@ const parse = {
     return o;
   },
   [CMD.UI_STATE](a) {
-    const r = new Reader(a), o = { caps: r.b(), palette: r.b(), font: r.b(), monitor: r.b(), filter: r.b() };
+    const r = new Reader(a), o = { caps: r.b() & 31, palette: r.b(), font: r.b(), monitor: r.b(), filter: r.b() };
     const u28 = () => r.b() | r.b() << 7 | r.b() << 14 | r.b() << 21;
     o.favoriteSig = u28(); o.bankSig = u28(); return o;
   },
@@ -1828,7 +1829,7 @@ function makeMockDevice(opt = {}) {
     slots: [null, null, null, null], songRows: [], chainPlaying: false, chainRow: 0, chainRemaining: 0,
     smp: [0, 1, 2].map(() => ({ flash: new Uint8Array(SMP.SLOT_SIZE).fill(0xFF), zones: 0, name: "", len: 0, next: SMP.DATA_OFF })),
     bank: new Array(opt.slots || 32).fill(null),     /* user presets: {engine, name, p, pattern, grid, fm6 (FM6: its patch)} */
-    uiCaps: opt.legacy || opt.v3 || opt.v5 ? 0 : opt.uiCaps ?? 9,
+    uiCaps: opt.legacy || opt.v3 || opt.v5 ? 0 : (opt.uiCaps ?? 25) & (opt.noUnifiedUI ? ~16 : 127),
     palette: 0, font: 0, monitor: 0, filter: 0, bankSig: 0,
     palettes: ["GREY", "GREEN", "AMBER", "ICE", "VIOLET", "ROSE", "PAPER", "HI-CON", "NIGHT", "MONO"],
     custom: { stored: false, active: false, c: PAL_BUILTIN[0].c.slice(), preview: null },   /* CUSTOM palette (1.6; palette: the base) */

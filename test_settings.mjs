@@ -61,4 +61,36 @@ for (const options of [{}, { noFlash: true }, { deferSettings: true }, { noCpu2:
     assert.equal(dev.closed, true); // Applied USB personality changes re-enumerate even when not saved yet.
   } finally { dev.close(); mock.stop(); }
 }
+// Reconnect old/new firmware with the same version string; descriptors keep their stable IDs.
+for (const options of [{}, { noUnifiedUI: true }, { uiCaps: 29 }, { uiCaps: 61 }]) {
+  const mock = makeMockDevice({ auto: false, ...options }), dev = new Device(mock.access);
+  await dev.open();
+  try {
+    const caps = options.noUnifiedUI ? 9 : (options.uiCaps ?? 25) & 31;
+    assert.equal(dev.info.uiCaps, caps);
+    assert.equal(dev.preferences.state.caps, caps);
+    const descriptor = dev.menu.find((m) => m.id === 2);
+    assert.equal(descriptor.name, "LARGE");
+    assert.deepEqual(descriptor.names, ["OFF", "ON"]);
+    const ids = dev.menu.map((m) => m.id);
+    for (const value of [1, 0]) {
+      assert.equal(await dev.menuSet(2, value), 0); // Historical clients may still write it.
+      await dev.readMenu(); await dev.syncPreferences(true);
+      assert.equal(dev.menu.find((m) => m.id === 2).value, value);
+      assert.deepEqual(dev.menu.map((m) => m.id), ids);
+      assert.equal(dev.info.uiCaps, caps);
+      assert.equal(dev.preferences.state.caps, caps);
+    }
+    assert.equal(await dev.changePreference(0, 2), 0);
+    assert.equal(dev.preferences.state.palette, 2);
+    if (caps & 4) {
+      assert.equal(await dev.changePreference(2, 1), 0);
+      assert.equal(dev.preferences.state.monitor, 1);
+    }
+    assert.equal(await dev.menuSet(3, 2), 0);
+    assert.equal(dev.menu.find((m) => m.id === 3).value, 2);
+    assert.equal(dev.menu.find((m) => m.id === 4).name, "LEDS");
+  } finally { dev.close(); mock.stop(); }
+}
+console.log("settings: unified/legacy reconnect, INFO/UI_STATE, refresh and stable MENU IDs passed");
 console.log("settings: applied rc0/3/4, refused rc2, all timers/LEDS, sparse IDs, old firmware and errors passed");
