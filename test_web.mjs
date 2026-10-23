@@ -1832,7 +1832,9 @@ ${code}
 async function editorSessions() {
   const state = html.slice(html.indexOf("let busy = 0;"), html.indexOf("let dragging", html.indexOf("let busy = 0;")));
   const requests = html.slice(html.indexOf("function assertSession(d)"), html.indexOf("/* the whole connect sequence */"));
-  const loading = html.slice(html.indexOf("async function load(d)"), html.indexOf("async function getDescOrNull"));
+  const loadStart = html.indexOf("async function load(d)"), loadEnd = html.indexOf("async function rereadEngineDesc", loadStart);
+  if (loadStart < 0 || loadEnd <= loadStart) throw new Error("retained load() test boundaries missing");
+  const loading = html.slice(loadStart, loadEnd);
   const library = html.slice(html.indexOf("async function libOp(fn)"), html.indexOf("const checkRc", html.indexOf("async function libOp(fn)")));
   let shown = 0, adopted, adoptStarted, setResets = 0;
   const nodes = new Map();
