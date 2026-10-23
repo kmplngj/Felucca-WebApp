@@ -67,7 +67,12 @@ Firmware commands resolve their identity from the pinned firmware checkout, with
 identity variables removed from those subprocesses. The client job's provenance and step-summary context remain intact.
 
 It also starts a temporary loopback server and runs every `test_fixtures/menu/*.html` page in headless Chrome,
-using a separate temporary browser profile. Each page must report PASS. Set `CHROME_BIN` to the browser executable
+using a separate temporary browser profile. Node 22's built-in WebSocket client controls only that Chrome instance
+through its temporary loopback debugging port. Timers use real time: virtual-time acceleration can exhaust a
+fixture deadline while IndexedDB is still pending. A driver regression compares both clocks with an IndexedDB
+transaction and a controlled wall-clock release, and verifies a held release still fails at ten real seconds.
+Each page must report PASS. The driver waits at most 60 real seconds for the result, within the unchanged
+90-second browser-stage bound, and retains the page DOM on failure. Set `CHROME_BIN` to the browser executable
 if it is not found automatically. Browser fixture failures and missing tools or generated inputs fail the gate.
 These checks exercise mock MIDI; they do not establish real USB, audio, installation or FM-1 behavior.
 
@@ -75,6 +80,15 @@ Read `build/ci/summary.json` first; it records revisions, tool versions, fixture
 logs and browser DOM output are beside it and are uploaded by CI for seven days. Required generated-input
 comparisons may not skip. Normal invocations invalidate the previous summary before startup checks; a missing
 checkout, wrong revision, missing tool or failed uv startup records a failed attempt with its cause. Printing the pin creates no artifacts.
+The normal entry point requires macOS or Linux. Metadata/tool-version probes have a 30-second limit; the owned
+`uv` process group has an 18-minute limit covering both locked-environment setup and the **entire gate**. This
+allows substantially more than the validated approximately five-minute gate while fitting under the workflow's
+20-minute job limit; individual check/browser limits remain 10 minutes/90 seconds. Before the parent records
+the outcome, it stops any remaining processes in that owned group, including a late summary writer. Other
+process groups are untouched. These guarantees apply to normal `python3 ci/check.py` invocations and descendants
+that inherit the owned group; the internal `--inside-locked-env` flag is not a standalone entry point. A tool that
+daemonizes into another session, a forced external kill, job cancellation or host shutdown can still prevent a
+completed summary; inspect the workflow conclusion as well as the summary.
 The retained classic editor's absent MENU UI, FM6 bank sender, MIDI LEARN and CUSTOM
 palette checks remain explicit feature skips. The historical package comparison also remains an explicit skip:
 it needs an official `FM-1_v15.fwsc` and target-build inputs that this host-only gate does not provide. A green
