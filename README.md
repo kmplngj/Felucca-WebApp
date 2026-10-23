@@ -37,6 +37,69 @@ JavaScript checks still run and this native check is explicitly skipped.
 
 The editor protocol is described in the firmware repository (`web/EDITOR_PROTOCOL.md`).
 
+## Continuous integration
+
+The **WebApp CI** workflow validates a candidate client on relevant pull requests and pushes to `main`.
+README-only changes do not schedule it. It uses the exact compatible firmware commit recorded in
+[`ci/firmware.json`](ci/firmware.json), including its engine submodule and locked Python build dependencies.
+Update that pin in a reviewed companion PR after the corresponding firmware contract has landed on `main`;
+normal runs never follow a moving firmware branch or an unmerged producer PR.
+
+To run the same gate locally, install Git, Node.js 22, Python 3.12, uv, a C compiler and Chrome or Chromium.
+No npm dependencies, JieLi toolchain, Docker, SDK, device or MIDI permission are needed. Use a separate clean
+firmware checkout: the runner verifies its revision and generates files under its ignored `build/` directory.
+From this repository:
+
+```sh
+git clone https://github.com/kmplngj/Felucca.git ../Felucca-ci
+git -C ../Felucca-ci checkout --detach "$(python3 ci/check.py --print-firmware-revision)"
+git -C ../Felucca-ci submodule update --init --recursive
+python3 ci/check.py --firmware ../Felucca-ci
+```
+
+`ci/check.py` enters `uv run --locked --group build` automatically. It checks its startup regressions, then generates firmware headers,
+full and retained-editor descriptor dumps, and normal/CPU2=0 MENU fixtures, then runs both protocol suites,
+backup, settings, app/build/generator, catalog and legacy-migration checks. The retained editor mocks use the
+firmware's explicit `descdump --legacy-web-mock` scope for engine IDs 0..13. Native comparisons keep their
+firmware-produced expected data; the runner never rewrites client tables or goldens.
+Native fixture builds use the firmware test runner's host flags, including `-O1`.
+Firmware commands resolve their identity from the pinned firmware checkout, with the consumer PR's source
+identity variables removed from those subprocesses. The client job's provenance and step-summary context remain intact.
+
+It also starts a temporary loopback server and runs every `test_fixtures/menu/*.html` page in headless Chrome,
+using a separate temporary browser profile. Node 22's built-in WebSocket client controls only that Chrome instance
+through its temporary loopback debugging port. Timers use real time: virtual-time acceleration can exhaust a
+fixture deadline while IndexedDB is still pending. A driver regression compares both clocks with an IndexedDB
+transaction and a controlled wall-clock release, and verifies a held release still fails at ten real seconds.
+Each page must report PASS. The driver waits at most 60 real seconds for the result, within the unchanged
+90-second browser-stage bound, and retains the page DOM on failure. Set `CHROME_BIN` to the browser executable
+if it is not found automatically. Browser fixture failures and missing tools or generated inputs fail the gate.
+These checks exercise mock MIDI; they do not establish real USB, audio, installation or FM-1 behavior.
+
+Read `build/ci/summary.json` first; it records revisions, tool versions, fixture hashes, results and skips. Full
+logs and browser DOM output are beside it and are uploaded by CI for seven days. Required generated-input
+comparisons may not skip. Normal invocations invalidate the previous summary before startup checks; a missing
+checkout, wrong revision, missing tool or failed uv startup records a failed attempt with its cause. Printing the pin creates no artifacts.
+The normal entry point requires macOS or Linux. Metadata/tool-version probes have a 30-second limit; the owned
+`uv` process group has an 18-minute limit covering both locked-environment setup and the **entire gate**. This
+allows substantially more than the validated approximately five-minute gate while fitting under the workflow's
+20-minute job limit; individual check/browser limits remain 10 minutes/90 seconds. Before the parent records
+the outcome, it stops any remaining processes in that owned group, including a late summary writer. Other
+process groups are untouched. These guarantees apply to normal `python3 ci/check.py` invocations and descendants
+that inherit the owned group; the internal `--inside-locked-env` flag is not a standalone entry point. A tool that
+daemonizes into another session, a forced external kill, job cancellation or host shutdown can still prevent a
+completed summary; inspect the workflow conclusion as well as the summary.
+The retained classic editor's absent MENU UI, FM6 bank sender, MIDI LEARN and CUSTOM
+palette checks remain explicit feature skips. The historical package comparison also remains an explicit skip:
+it needs an official `FM-1_v15.fwsc` and target-build inputs that this host-only gate does not provide. A green
+gate does not claim that comparison passed; its skip appears in the run summary.
+
+After the workflow is present on the default branch, **Actions > WebApp CI > Run workflow** supports manual runs.
+Leave `firmware_revision` empty for the recorded pin. An optional full 40-character firmware SHA performs a
+clearly marked test-only contract comparison; it does not change the pin or qualify a firmware release. For a
+new workflow's first PR, use its automatic pull-request run before merging, because GitHub only registers manual
+dispatch once the workflow exists on the default branch. No workflow here publishes, flashes or releases anything.
+
 ## Device settings
 
 The new editor builds Settings from the connected firmware's MENU descriptors, including all six LED
