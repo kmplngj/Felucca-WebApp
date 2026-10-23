@@ -1,6 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Exercise the real page's Settings and message log, with mock MIDI only.
 const frame = document.querySelector("#editor"), result = document.querySelector("#result");
+// dump-dom omits iframe contents; keep a bounded failure snapshot in the parent result.
+const errors = [], short = (value) => String(value ?? "").slice(0, 200);
+let watched;
+function watchErrors() {
+  if (watched === frame.contentDocument) return;
+  watched = frame.contentDocument;
+  const record = (value) => { errors.push(short(value)); if (errors.length > 4) errors.shift(); };
+  frame.contentWindow.addEventListener("error", (event) => record(event.message));
+  frame.contentWindow.addEventListener("unhandledrejection", (event) => record(event.reason?.message || event.reason));
+}
+frame.addEventListener("load", watchErrors, { once: true });
+function failureState() {
+  const doc = frame.contentDocument, settings = doc?.querySelector("#s-settings"), connect = doc?.querySelector("#connect");
+  return {
+    document: doc?.readyState, connection: short(doc?.querySelector("#state-t")?.textContent),
+    message: short(doc?.querySelector("#msg-t")?.textContent),
+    connect: connect && { label: short(connect.textContent), disabled: connect.disabled },
+    settingsVisible: !!settings && !settings.hidden,
+    settingsLabels: [...(settings?.querySelectorAll("select[aria-label]") || [])].slice(0, 40).map((input) => short(input.getAttribute("aria-label"))),
+    errors,
+  };
+}
 const check = (ok, message) => { if (!ok) throw new Error(message); };
 const until = async (fn, message) => {
   const end = Date.now() + 10000;
@@ -11,6 +33,7 @@ const until = async (fn, message) => {
 };
 try {
   await until(() => frame.contentDocument?.querySelector("#settings")?.onclick, "editor ready");
+  watchErrors();
   const doc = frame.contentDocument;
   doc.querySelector("#settings").click();
   const field = (name) => doc.querySelector(`select[aria-label="${name}"]`);
@@ -47,7 +70,7 @@ try {
   result.textContent = "PASS: refusal → saved, warning reset, confirmed values, retained log and language changes";
   document.documentElement.dataset.testResult = "passed";
 } catch (e) {
-  result.textContent = "FAIL: " + e.message;
+  result.textContent = "FAIL: " + e.message + " | " + JSON.stringify(failureState());
   document.documentElement.dataset.testResult = "failed";
   throw e;
 }
