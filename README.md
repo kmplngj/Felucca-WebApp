@@ -44,11 +44,14 @@ brightness modes and the AUTO OFF, WAKE and ALL DARK options when advertised. AU
 mode/time values over MIDI; the native panel's detail page does not add a separate editor protocol.
 ALL DARK must be later than an enabled AUTO OFF timer. Rejected changes restore the device's actual value;
 RAM-only and deferred-save replies retain the applied value and display their existing save-status messages.
+Saved changes display "Saved", replacing earlier warnings in the status bar. Previous messages remain in the log.
 Device-side changes appear when Settings is reopened. Older firmware keeps its advertised controls.
 
 For a browser regression without hardware, run `python3 serve.py 8774` and open
 `http://localhost:8774/test_fixtures/menu/settings.html`. It must report PASS. This fixture creates only a
 simulated MIDI device and checks focused rollback, newer picker drafts, request failures and sparse IDs.
+Open `http://localhost:8774/test_fixtures/menu/feedback.html` for the full editor's refusal-to-success regression,
+including the status bar, retained message log and language changes; it must also report PASS.
 The retained classic editor does not expose the MENU settings UI.
 
 ## Engine catalogs and backup compatibility

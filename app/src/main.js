@@ -84,7 +84,7 @@ const ui = {
   say: (text, level = "info") => say(text, level),
   progress: (text) => { $("#msg-t").textContent = text; },
   changed: (s, id, v) => { if (s === 0 && dev) { drawTracks(); seq.param(s, id, v); } },
-  prefResult: (rc) => { if (rc === 4) sayK("pending"); else if (rc === 3) sayK("unsaved"); else if (rc) sayK("rejected"); },
+  prefResult: (rc) => { if (rc === 0) sayK("saved"); else if (rc === 4) sayK("pending"); else if (rc === 3) sayK("unsaved"); else if (rc) sayK("rejected"); },
   relabel: () => { relabel(); renderAll(); },
 };
 const sound = soundScreen($("#s-sound"), ui);
