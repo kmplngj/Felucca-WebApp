@@ -223,7 +223,7 @@ $("go").addEventListener("click", async () => {
       await up.install(image, meta.product, step);
     }
   } catch (e) {
-    if (wrote && !(e && e.code && ["noreturn", "mismatch"].includes(e.code))) { sayK("inupdate"); log(String(e && e.stack || e)); lockInstaller(false); return; }
+    if (wrote && !(e && e.code && ["noreturn", "mismatch", "badpkg", "incompatible"].includes(e.code))) { sayK("inupdate"); log(String(e && e.stack || e)); lockInstaller(false); return; }
     if (e && e.code && TEXT[lang][e.code]) sayK(e.code, e.detail || "");
     else sayK("error", e && e.message);
     log(String(e && e.stack || e));

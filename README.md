@@ -17,6 +17,7 @@ python3 serve.py            # http://localhost:8766/app/index.html?mock=1
 node test_settings.mjs      # MENU replies, sparse IDs and AUTO OFF constraints (mock only)
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
+node test_ota.mjs           # updater preflight / resume contract, fake devices and time
 node test_backup.mjs        # the full backup
 node test_project_import.mjs # firmware project bytes, import/restore compatibility guards
 node test_catalog.mjs       # catalogs, stable ids and settings compatibility
@@ -36,6 +37,37 @@ NOISE or FM6; all compiler outputs stay in a temporary directory. Without the fi
 JavaScript checks still run and this native check is explicitly skipped.
 
 The editor protocol is described in the firmware repository (`web/EDITOR_PROTOCOL.md`).
+
+## Update and resume compatibility
+
+Every `Updater.install(image, product, onStep)`, `resume(image, onStep, product)` and
+`write(device, image, onStep, product)` call requires the selected package's application product.
+Missing, malformed or loader products fail before discovery or update traffic. Products follow the
+firmware build's `FM-1_` plus 1–15 uppercase ASCII letters, digits, dots, underscores or hyphens.
+The final application handshake must exactly match that product; an absent or different application
+never reports completion. The page already supplies its selected product for both install and resume.
+Each public call synchronously copies its input bytes before any awaited work, including Node Buffers and
+typed-array subclasses. Mutating the caller's input during preflight or progress callbacks cannot change
+the checked/transferred bytes.
+
+| Selected package | Accepted loader handshake |
+| --- | --- |
+| CRC-checked UFW containing Felucca's supported loader heads and initial `FELUCCA-LOADER-1` marker | `ota-FM-1_900` |
+| Unmodified official V15, pinned by SHA-256 and checked package layout | `ota-FM-1_015` |
+
+Each pair is checked again at the public write boundary, including loaders discovered after staging.
+Other loader identities and crossed pairs are refused before sending an upgrade command or image bytes
+to that loader. A package product in the 9xx range does not establish loader compatibility.
+The `ota-FM-1_015` string in the firmware's update record does not describe the custom loader's handshake.
+An early rescue application answering `FM-1_…` follows the regular staging flow before its package's
+loader is checked. These rules describe existing loader recovery; they do not add a recovery command.
+The custom-loader marker is matched within the producer's first 64-byte literal window. Its following
+compressed LZ4 byte need not be NUL; that byte is not part of the marker contract.
+
+`node test_ota.mjs` exercises the contract without hardware, browser or wall-clock delays. Set
+`FELUCCA_STOCK=/path/to/FM-1.fwsc` to include digest-verified official V15 success cases; without
+that proprietary fixture those cases are explicitly skipped, while custom-loader and stock rejection
+cases still run. An explicitly supplied missing, unreadable or nonmatching file fails; it never becomes a skip.
 
 ## Continuous integration
 
@@ -59,7 +91,9 @@ python3 ci/check.py --firmware ../Felucca-ci
 
 `ci/check.py` enters `uv run --locked --group build` automatically. It checks its startup regressions, then generates firmware headers,
 full and retained-editor descriptor dumps, and normal/CPU2=0 MENU fixtures, then runs both protocol suites,
-backup, settings, app/build/generator, catalog and legacy-migration checks. The retained editor mocks use the
+the dedicated updater contract, backup, settings, app/build/generator, catalog and legacy-migration checks.
+The updater stage always checks products, custom-loader pairs, final identity and immutable input buffers using
+synthetic packages/devices. The retained editor mocks use the
 firmware's explicit `descdump --legacy-web-mock` scope for engine IDs 0..13. Native comparisons keep their
 firmware-produced expected data; the runner never rewrites client tables or goldens.
 Native fixture builds use the firmware test runner's host flags, including `-O1`.
@@ -93,6 +127,16 @@ The retained classic editor's absent MENU UI, FM6 bank sender, MIDI LEARN and CU
 palette checks remain explicit feature skips. The historical package comparison also remains an explicit skip:
 it needs an official `FM-1_v15.fwsc` and target-build inputs that this host-only gate does not provide. A green
 gate does not claim that comparison passed; its skip appears in the run summary.
+The updater stage separately permits only the explicit official-V15 success skip when `FELUCCA_STOCK` is
+unset. To include those success cases, run:
+
+```sh
+FELUCCA_STOCK=/absolute/path/to/FM-1.fwsc python3 ci/check.py --firmware ../Felucca-ci
+```
+
+The path is forwarded into the locked environment and the original
+digest/layout are validated by the suite. A requested missing/invalid file, any custom-contract skip or an
+unrecognized skip fails the gate. No proprietary firmware is committed or downloaded by CI.
 
 After the workflow is present on the default branch, **Actions > WebApp CI > Run workflow** supports manual runs.
 Leave `firmware_revision` empty for the recorded pin. An optional full 40-character firmware SHA performs a

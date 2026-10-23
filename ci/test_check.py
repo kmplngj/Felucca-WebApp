@@ -171,6 +171,17 @@ class AttemptSummary(unittest.TestCase):
         self.assertEqual(completed.stdout.strip(), "1" * 40)
         self.assertFalse((self.root / "build").exists())
 
+    def test_requested_stock_fixture_reaches_locked_runner(self):
+        firmware, revision = self.firmware_checkout()
+        self.pin.write_text(json.dumps({"repository": "kmplngj/Felucca", "revision": revision}))
+        observed = Path(self.temp.name) / "stock-env"
+        env = self.fake_tool("uv", "import os\nfrom pathlib import Path\n"
+                             f"Path({str(observed)!r}).write_text(os.environ.get('FELUCCA_STOCK', 'absent'))\n"
+                             "raise SystemExit(73)\n")
+        completed = self.run_gate("--firmware", str(firmware), env={**env, "FELUCCA_STOCK": "official.fwsc"})
+        self.assert_failed_attempt(completed, "locked runner exited 73")
+        self.assertEqual(observed.read_text(), str((self.root / "official.fwsc").resolve()))
+
     def test_missing_compiler_records_original_startup_cause(self):
         firmware, revision = self.firmware_checkout()
         self.git_checkout(self.root)

@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROBE_TIMEOUT = 30
 LOCKED_RUNNER_TIMEOUT = 18 * 60
 PACKAGE_SKIP = "packages: skipped (needs FM-1_v15.fwsc and a felucca/build.py build)"
+OTA_STOCK_SKIP = "updater: official V15 success: skipped (set FELUCCA_STOCK to the unmodified official file)"
 CLASSIC_SKIPS = {
     "editor: MENU settings (this editor has none)",
     "FM6 bank: (editor.html has no voice bank sender)",
@@ -60,10 +61,12 @@ def output(*cmd, cwd=ROOT):
     return done.stdout.rstrip()
 
 
-def unexpected_skips(text, suite):
+def unexpected_skips(text, suite, *, stock_requested=False):
     skips = [line.strip() for line in text.splitlines()
-             if line.rstrip().endswith(" skip") or ": skipped (" in line]
+             if line.rstrip().endswith(" skip") or ": skipped (" in line or re.match(r"(?i)\s*skip\b", line)]
     allowed = {PACKAGE_SKIP} if suite in ("classic", "app-protocol") else set()
+    if suite == "ota" and not stock_requested:
+        allowed.add(OTA_STOCK_SKIP)
     return skips, [line for line in skips if line not in allowed and not (
         suite == "classic" and line.removesuffix("skip").strip() in CLASSIC_SKIPS)]
 
@@ -160,6 +163,10 @@ def main():
         if any(line.startswith(("-", "+", "U")) for line in submodules.splitlines()):
             raise RuntimeError("initialize firmware submodules at their pinned commits")
         env = {k: v for k, v in os.environ.items() if not k.startswith("FELUCCA_")}
+        # Optional proprietary input is explicit, unlike generated contract inputs supplied below.
+        # Preserve it across the locked runner; missing/invalid requested files must fail the OTA suite.
+        if stock := os.environ.get("FELUCCA_STOCK"):
+            env["FELUCCA_STOCK"] = str(Path(stock).resolve())
         env.update(PYTHONDONTWRITEBYTECODE="1", FELUCCA_PROFILE="standard", FELUCCA_FONT="m8stealth")
         if not args.inside_locked_env:
             done = owned_run(["uv", "run", "--project", str(firmware), "--locked", "--group", "build",
@@ -196,7 +203,7 @@ def main():
             else:
                 done = subprocess.run(command, cwd=cwd, env=process_env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         text = log_path.read_text()
-        skips, unexpected = unexpected_skips(text, name)
+        skips, unexpected = unexpected_skips(text, name, stock_requested=bool(env.get("FELUCCA_STOCK")))
         results["checks"].append({"name": name, "command": command, "cwd": str(cwd), "exit": done.returncode,
                                   "seconds": round(time.monotonic() - start, 2),
                                   "skips": skips, "log": log_path.name})
@@ -231,6 +238,7 @@ def main():
         for name, command in [
             ("classic", ["node", "test_web.mjs"]),
             ("app-protocol", ["env", "FELUCCA_PROTO=app", "node", "test_web.mjs"]),
+            ("ota", ["node", "test_ota.mjs"]),
             ("backup", ["node", "test_backup.mjs"]),
             ("settings", ["node", "test_settings.mjs"]),
             ("app", ["node", "test_app.mjs"]),
