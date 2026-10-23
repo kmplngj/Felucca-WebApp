@@ -152,6 +152,9 @@
   .strip button.selb:disabled { opacity: 1; background: none; color: var(--dim); }
   #sysinfo th { padding-right: 16px; }
   [hidden] { display: none !important; }
+  .midi-picker { max-width: min(420px, calc(100vw - 32px)); }
+  .midi-picker label { display: grid; gap: 6px; margin-bottom: 16px; min-width: 0; }
+  .midi-picker select { width: 100%; max-width: 100%; min-height: 34px; font: inherit; }
 </style>
 </head>
 <body>
@@ -2524,6 +2527,218 @@ function devicePresetRows(info, names, preferences) {
 }
 
 /*PROTO-END*/
+/*DISCOVERY-BEGIN*/
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Felucca contributors
+// One policy for both editors. Names select candidates; only read-only replies qualify a session.
+const midiPolicies = new WeakMap();
+const midiCandidate = (p) => p.state === "connected" && !/ota|update/i.test(p.name || "") &&
+  /felucca|fm-1|sloop|clipper|conflux|composite|sinco|usb-midi/i.test(p.name || "");
+const midiError = (message) => new Error(message);
+
+function midiString(r, max) {
+  let text = "";
+  for (;;) {
+    const b = r.b();
+    if (!b) return text;
+    if (b < 32 || b > 126 || text.length === max) throw midiError("protocol");
+    text += String.fromCharCode(b);
+  }
+}
+
+function validateMidiInfo(a, protocol) {
+  if (a.length + 6 > 664 || a.some((b) => !Number.isInteger(b) || b < 0 || b > 127)) throw midiError("protocol");
+  let at = 0;
+  const r = { b() { if (at === a.length) throw midiError("protocol"); return a[at++]; } };
+  const version = midiString(r, 24), n = r.b(), count = r.b(), globals = r.b(), steps = r.b(), pe0 = r.b();
+  if (!/^FELUCCA /.test(version) || n < 1 || n > 64 || count < 57 || count > 127 ||
+      globals !== 27 || steps !== 64 || pe0 !== count - 8) throw midiError("protocol");
+  for (let i = 0; i < n; i++) if (!midiString(r, 8)) throw midiError("protocol");
+  const info = protocol.parse[protocol.CMD.INFO](a);
+  if (![0, 4].includes(info.ntrk) || ![0, 16].includes(info.chainRows)) throw midiError("protocol");
+  return info;
+}
+
+function validateMidiDesc(a, scope, id, protocol) {
+  if (a.length + 6 > 664 || a.some((b) => !Number.isInteger(b) || b < 0 || b > 127)) throw midiError("protocol");
+  let at = 0;
+  const r = { b() { if (at === a.length) throw midiError("protocol"); return a[at++]; },
+    v() { const lo = this.b(); return (lo | this.b() << 7) - 8192; } };
+  const d = { scope: r.b(), id: r.b(), fmt: r.b(), min: r.v(), max: r.v(), def: r.v(), names: [] };
+  if (d.scope !== scope || d.id !== id || d.fmt > 13 || d.min > d.max || d.def < d.min || d.def > d.max) throw midiError("protocol");
+  d.label = midiString(r, 8); d.unit = midiString(r, 8);
+  if (!d.label) throw midiError("protocol");
+  if (d.fmt === protocol.F.ENUM) {
+    // Ordinary enums have at most 24 names; the producer's MACRO SHAPE has 48, up to 12 characters.
+    const count = Math.min(d.max - d.min + 1, 24);
+    for (let i = 0; i < count; i++) d.names.push(midiString(r, 12));
+    if (at < a.length && d.max - d.min + 1 === 48)
+      while (d.names.length < 48) d.names.push(midiString(r, 12));
+  }
+  if (at !== a.length) throw midiError("protocol");
+  return d;
+}
+
+class MidiDiscovery {
+  constructor(access, protocol) {
+    this.access = access; this.protocol = protocol;
+    this.targets = new Map(); this.closing = new Map(); this.owners = new Map(); this.pending = null;
+  }
+  ports() {
+    const order = (a, b) => Number(!/felucca/i.test(a.name || "")) - Number(!/felucca/i.test(b.name || ""));
+    return { inputs: [...this.access.inputs.values()].filter(midiCandidate).sort(order),
+      outputs: [...this.access.outputs.values()].filter(midiCandidate).sort(order) };
+  }
+  state(port) {
+    if (port.state !== "disconnected") return;
+    if (this.probing?.includes(port)) this.pending?.abort(midiError("lost"));
+    this.owners.delete(port); this.closing.delete(port);
+    this.targets.delete(port.id);
+    for (const [input, output] of this.targets) if (output === port.id) this.targets.delete(input);
+  }
+  async open({ select, signal, preferred, onPair } = {}) {
+    this.pending?.abort();
+    const abort = new AbortController(); this.pending = abort;
+    const cancel = () => abort.abort();
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
+    const { inputs, outputs } = this.ports();
+    try {
+      if (abort.signal.aborted) throw midiError("closed");
+      let chosen = preferred;
+      if (!chosen && inputs.length === 1 && outputs.length === 1 && /felucca/i.test(inputs[0].name || "") &&
+          inputs[0].name === outputs[0].name && inputs[0].manufacturer === outputs[0].manufacturer)
+        chosen = { input: inputs[0].id, output: outputs[0].id };
+      if (!inputs.length || !outputs.length) throw midiError("nodevice");
+      if (!chosen) {
+        if (!select) throw midiError("selectPorts");
+        chosen = await select({ inputs, outputs }, abort.signal);
+      }
+      if (!chosen || abort.signal.aborted) throw midiError("closed");
+      const pairs = Array.isArray(chosen) ? chosen : [chosen];
+      if (!pairs.length || pairs.length > 3) throw midiError("selectPorts");
+      const end = Date.now() + 9000;
+      let last;
+      for (const pair of pairs) {
+        const input = inputs.find((p) => p.id === pair.input), output = outputs.find((p) => p.id === pair.output);
+        if (!input || !output || abort.signal.aborted) throw midiError("closed");
+        if (this.targets.has(input.id) && this.targets.get(input.id) !== output.id) throw midiError("pairAmbiguous");
+        this.targets.set(input.id, output.id);
+        onPair?.({ input: input.id, output: output.id });
+        this.probing = [input, output];
+        try { return await this.probe(input, output, abort.signal, Math.min(3000, end - Date.now())); }
+        catch (error) { if (abort.signal.aborted || Date.now() >= end) throw error; last = error; }
+        finally { this.probing = null; }
+      }
+      throw last || midiError("noreply");
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+      if (this.pending === abort) this.pending = null;
+    }
+  }
+  async probe(input, output, signal, milliseconds) {
+    const { Link, CMD, req, F } = this.protocol;
+    let closed = false, acquired = false, timer, rejectStop, malformed = false;
+    const owner = {};
+    const stop = new Promise((_, reject) => { rejectStop = reject; });
+    const aborted = () => { rejectStop(midiError(signal.reason?.message === "lost" ? "lost" : "closed")); close(); };
+    signal.addEventListener("abort", aborted, { once: true });
+    timer = setTimeout(() => rejectStop(midiError("noreply")), Math.max(1, milliseconds));
+    const link = new Link((data) => {
+      if (closed || input.state !== "connected" || output.state !== "connected") throw midiError("lost");
+      output.send(data);
+    });
+    const handler = (event) => {
+      if (closed) return;
+      const data = event.data;
+      if (data?.[0] === 240 && data[1] === 125 && data[2] === 70 && data[3] === 76 && data[4] === CMD.INFO &&
+          (data.length > 664 || data[data.length - 1] !== 247 || [...data.slice(1, -1)].some((b) => b > 127))) {
+        malformed = true; rejectStop(midiError("protocol")); return;
+      }
+      link.receive(data);
+    };
+    const opened = [];
+    const close = () => {
+      if (closed) return;
+      closed = true; link.close();
+      if (input.onmidimessage === handler) input.onmidimessage = null;
+      if (!acquired) return;
+      for (const port of [input, output]) {
+        if (this.owners.get(port) !== owner) continue;
+        // Include late open completion: a replacement must not acquire the port before cleanup settles.
+        const cleanup = Promise.allSettled(opened).then(() => this.owners.get(port) === owner ? port.close?.() : null).catch(() => {});
+        this.closing.set(port, cleanup);
+        cleanup.finally(() => {
+          if (this.closing.get(port) === cleanup) this.closing.delete(port);
+          if (this.owners.get(port) === owner) this.owners.delete(port);
+        });
+      }
+    };
+    try {
+      await Promise.race([Promise.all([this.closing.get(input), this.closing.get(output)]), stop]);
+      if (signal.aborted) throw midiError("closed");
+      if (this.owners.has(input) || this.owners.has(output)) throw midiError("portBusy");
+      acquired = true;
+      this.owners.set(input, owner); this.owners.set(output, owner);
+      for (const port of [input, output]) opened.push(Promise.resolve().then(() => port.open?.()));
+      await Promise.race([Promise.all(opened), stop]);
+      if (signal.aborted) throw midiError("closed");
+      input.onmidimessage = handler;
+      const a = await Promise.race([link.request(req.info(), { timeout: 500, retries: 3, quiet: true }), stop]);
+      const info = validateMidiInfo(a, this.protocol);
+      const pdesc = validateMidiDesc(await Promise.race([link.request(req.desc(0, 0), { timeout: 250, retries: 0, quiet: true }), stop]), 0, 0, this.protocol);
+      const gdesc = validateMidiDesc(await Promise.race([link.request(req.desc(1, 0), { timeout: 250, retries: 0, quiet: true }), stop]), 1, 0, this.protocol);
+      if (pdesc.label !== "LVL" || pdesc.fmt !== F.DB || pdesc.min !== 0 || pdesc.max !== 127 ||
+          gdesc.label !== "BPM" || gdesc.fmt !== F.BPM || gdesc.min !== 40 || gdesc.max !== 240) throw midiError("protocol");
+      return { input, output, link, info, pdesc, gdesc, close };
+    } catch (error) {
+      close();
+      throw signal.aborted ? midiError(signal.reason?.message === "lost" ? "lost" : "closed") : malformed ? midiError("protocol") : !acquired && error.message === "noreply" ? midiError("portBusy") : error;
+    }
+    finally { clearTimeout(timer); signal.removeEventListener("abort", aborted); }
+  }
+}
+
+function discoveryFor(access, protocol) {
+  if (!midiPolicies.has(access)) midiPolicies.set(access, new MidiDiscovery(access, protocol));
+  return midiPolicies.get(access);
+}
+
+function midiPortState(access, port) { midiPolicies.get(access)?.state(port); }
+
+// Existing dialog styles and translated strings are supplied by each editor.
+function midiPortPicker(ports, signal, words) {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog"), form = document.createElement("form"); dialog.className = "midi-picker";
+    const title = document.createElement("h3"), note = document.createElement("p");
+    title.textContent = words.selectPorts; note.textContent = words.portHelp;
+    title.id = "midi-picker-title"; dialog.setAttribute("aria-labelledby", title.id);
+    const selects = [ports.inputs, ports.outputs].map((list, index) => {
+      const label = document.createElement("label"), select = document.createElement("select");
+      label.textContent = index ? words.midiOutput : words.midiInput;
+      select.required = true; select.className = "text wide";
+      const empty = document.createElement("option"); empty.value = ""; empty.textContent = words.selectPorts; select.append(empty);
+      for (const port of list) {
+        const option = document.createElement("option"); option.value = port.id;
+        option.textContent = `${port.name || "—"} · ${port.manufacturer || "—"} · ${port.id}`;
+        select.append(option);
+      }
+      label.append(select); form.append(label); return select;
+    });
+    const actions = document.createElement("div"), cancel = document.createElement("button"), connect = document.createElement("button");
+    actions.className = "acts"; cancel.type = "button"; connect.type = "submit";
+    cancel.className = "btn"; connect.className = "btn primary";
+    cancel.textContent = words.cancel; connect.textContent = words.connect;
+    actions.append(cancel, connect); form.append(actions); dialog.append(title, note, form); document.body.append(dialog);
+    const finish = (value) => { signal.removeEventListener("abort", abort); dialog.close(); dialog.remove(); resolve(value); };
+    const abort = () => finish(null);
+    signal.addEventListener("abort", abort, { once: true });
+    cancel.onclick = abort; dialog.oncancel = (event) => { event.preventDefault(); abort(); };
+    form.onsubmit = (event) => { event.preventDefault(); finish({ input: selects[0].value, output: selects[1].value }); };
+    if (signal.aborted) abort(); else { dialog.showModal(); selects[0].focus(); }
+  });
+}
+/*DISCOVERY-END*/
 
 /* ===================================================================== UI === */
 if (typeof document !== "undefined") (() => {
@@ -2581,6 +2796,9 @@ function setLabel(e, txt) { e.replaceChildren(...(e.dataset.ic ? [icon(e.dataset
 
 const TEXT = {
   ja: {
+    cancel: "やめる", selectPorts: "MIDI ポートを選択", midiInput: "MIDI 入力", midiOutput: "MIDI 出力",
+    portHelp: "同じ FM-1 の入力と出力を選んでください。同名で区別できない場合は、ほかの機器を外してください。読み込み前は互換性の確認のみを行います。",
+    protocol: "エディター応答に互換性がありません", pairAmbiguous: "この入力の出力を変更する前に機器を接続し直してください。", portBusy: "MIDI ポートを終了中です。機器を接続し直してください。",
     tabFm6: "6-OP FM", fm6Help: "FM6 エンジンの音色（6 オペレーター）をまるごと編集します。本体のノブはこの音色の上にかかるマクロです。SysEx を読み込み、音色を選んで編集し、トラックへ送るとすぐ鳴ります。トラックの音色はひとつで、読み込んだものがそのトラックの音色になります（SLOT は OWN）。",
     fm6Source: "音色の出し入れ", fm6ReadBtn: "トラックから読む", fm6SendBtn: "トラックへ送る", fm6Live: "編集しながら送る",
     fm6Import: "SysEx を読み込む", fm6Export: "SysEx に書き出し",
@@ -2684,6 +2902,9 @@ const TEXT = {
     smpSlots: "サンプルスロット", userBank: "ユーザープリセット", none: "なし",
   },
   en: {
+    cancel: "Cancel", selectPorts: "Select MIDI ports", midiInput: "MIDI input", midiOutput: "MIDI output",
+    portHelp: "Choose the input and output of the same FM-1. If identical names are unclear, unplug other devices first. Only a read-only compatibility check is sent before loading.",
+    protocol: "Incompatible editor reply", pairAmbiguous: "Reconnect the device before changing this input's output.", portBusy: "MIDI port is still closing. Reconnect the device and try again.",
     tabFm6: "6-OP FM", fm6Help: "Edit the whole patch of the FM6 engine (six operators). The device's knobs are macros on top of it. Import a SysEx file, pick a voice, edit it and send it to a track: it plays at once. A track has one patch: whatever you load becomes it (SLOT shows OWN).",
     fm6Source: "Patches in and out", fm6ReadBtn: "Read from track", fm6SendBtn: "Send to track", fm6Live: "Send while editing",
     fm6Import: "Import SysEx", fm6Export: "Export SysEx",
@@ -2795,7 +3016,7 @@ function applyLang() {
   document.documentElement.lang = lang;
   document.querySelectorAll("[data-t]").forEach((e) => setLabel(e, t(e.dataset.t)));
   $("lang").textContent = t("other");
-  setLabel($("connect"), t(dev ? "disconnect" : "connect"));
+  setLabel($("connect"), t(connecting ? "cancel" : dev ? "disconnect" : "connect"));
   if (lastKey) $("status").textContent = t(lastKey) + lastArg;
   $("libq").placeholder = t("libSearch");
   renderLive();
@@ -2956,13 +3177,16 @@ const pPan = () => pById("PAN", 39), pMute = () => pById("MUTE", 40);
 
 /* -------------------------------------------------------------- MIDI --- */
 let connecting = false;
-async function connect() {
+let connectionEpoch = 0, connectionAbort = null, rememberedPair = null, reconnectTimer;
+const portStates = new WeakMap();
+async function connect(reconnect = false) {
   if (connecting || dev) return;
   connecting = true;
   let connectedDevice = null;
   wantConnected = true;
   if (!MOCK && !navigator.requestMIDIAccess) { connecting = false; sayK("nomidi"); return; }
-  $("connect").disabled = true;
+  const epoch = ++connectionEpoch, abort = new AbortController(); connectionAbort = abort;
+  setLabel($("connect"), t("cancel"));
   sayK("connecting");
   try {
     if (!access) {
@@ -2971,44 +3195,43 @@ async function connect() {
         try { access = await navigator.requestMIDIAccess({ sysex: true }); }
         catch (e) { sayK("denied"); return; }
       }
-      access.onstatechange = onState;
+      for (const port of [...access.inputs.values(), ...access.outputs.values()]) portStates.set(port, port.state);
     }
-    const isF = (p) => /felucca/i.test(p.name || "") && p.state !== "disconnected";
-    const input = [...access.inputs.values()].find(isF);
-    const output = [...access.outputs.values()].find(isF);
-    if (!input || !output) { sayK("nodevice"); return; }
-    const link = new Link((d) => output.send(d), {
-      timeout: 300,
-      onUnknown: (f) => console.debug("ignored reply", f),
-      onTimeout: () => sayK("noreply"),
-      onPush: (f) => onPush(f),
-      onGap: () => { rewatch = true; },
-    });
-    input.onmidimessage = (e) => link.receive(e.data);
-    if (input.open) await input.open().catch(() => {});
-    dev = { link, input, output, info: null, pdesc: [], gdesc: [], names: [], dump: null, steps: [], slotUsed: [null, null, null, null],
+    if (epoch !== connectionEpoch || abort.signal.aborted) return;
+    access.onstatechange = onState;
+    const session = await discoveryFor(access, { CMD, F, Link, parse, req }).open({ signal: abort.signal,
+      preferred: reconnect ? rememberedPair : null,
+      onPair: (pair) => { if (epoch === connectionEpoch) rememberedPair = pair; },
+      select: (ports, signal) => midiPortPicker(ports, signal, Object.fromEntries(
+        ["selectPorts", "portHelp", "midiInput", "midiOutput", "cancel", "connect"].map((key) => [key, t(key)]))) });
+    if (epoch !== connectionEpoch || abort.signal.aborted) { session.close(); return; }
+    const { link, input, output } = session;
+    link.onUnknown = (f) => console.debug("ignored reply", f);
+    link.onTimeout = () => sayK("noreply"); link.onPush = (f) => onPush(f); link.onGap = () => { rewatch = true; };
+    dev = { session, link, input, output, info: session.info, pdesc: [], gdesc: [], names: [], dump: null, steps: [], slotUsed: [null, null, null, null],
       keys: null, watch: false, bank: null };
     connectedDevice = dev;
-    setLabel($("connect"), t("disconnect"));
+    rememberedPair = { input: input.id, output: output.id };
     await load(connectedDevice);
   } catch (e) {
-    console.error(e);
+    if (epoch !== connectionEpoch) return;
+    if (e.message === "closed") wantConnected = false;
     if (connectedDevice && connectedDevice === dev) { /* an old connection must not close a replacement */
-      const timeout = /^timeout/.test(e.message);
       disconnect();
-      sayK(timeout ? "noreply" : "error", timeout ? "" : e.message);
     }
+    sayK(["nodevice", "protocol", "pairAmbiguous", "portBusy", "selectPorts", "lost"].includes(e.message) ? e.message :
+      e.message === "closed" ? "disconnected" : "noreply");
   } finally {
-    connecting = false;
-    $("connect").disabled = false;
+    if (epoch === connectionEpoch) { connecting = false; connectionAbort = null; setLabel($("connect"), t(dev ? "disconnect" : "connect")); }
   }
 }
 
 function disconnect(reasonKey = "disconnected") {
+  ++connectionEpoch; connectionAbort?.abort(); connectionAbort = null; connecting = false; clearTimeout(reconnectTimer);
   samplesLeave();                                   /* the Samples tab goes: so do the input and the preview */
   if (dev) {
-    dev.link.close();
-    dev.input.onmidimessage = null;
+    if (dev.session) dev.session.close();
+    else { dev.link.close(); dev.input.onmidimessage = null; }
   }
   dev = null;
   resetBusy();
@@ -3028,12 +3251,16 @@ function disconnect(reasonKey = "disconnected") {
 
 function onState(e) {
   const p = e.port;
-  if (!p || !/felucca/i.test(p.name || "")) return;
+  if (!p) return;
+  const previous = portStates.get(p); portStates.set(p, p.state);
+  midiPortState(access, p);
+  if (previous === p.state) return;
   if (dev && p.state === "disconnected" && (p.id === dev.input.id || p.id === dev.output.id)) {
     disconnect("lost");
-  } else if (!dev && wantConnected && p.state === "connected" && p.type === "output") {
-    clearTimeout(onState.tm);                       /* the device came back: reconnect */
-    onState.tm = setTimeout(() => { if (!dev && wantConnected) connect(); }, 800);
+  } else if (!dev && !connecting && wantConnected && p.state === "connected" && rememberedPair &&
+      [rememberedPair.input, rememberedPair.output].includes(p.id)) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => { if (!dev && wantConnected) connect(true); }, 800);
   }
 }
 
@@ -3045,7 +3272,7 @@ async function sessionRequest(d, r, opt) {
   return reply;
 }
 const rq = (r, opt) => sessionRequest(dev, r, opt);
-async function getDesc(scope, id, d = dev) { return parse[CMD.DESC](await sessionRequest(d, req.desc(scope, id))); }
+async function getDesc(scope, id, d = dev) { return validateMidiDesc(await sessionRequest(d, req.desc(scope, id)), scope, id, { F }); }
 async function getDump(d = dev) { const reply = await sessionRequest(d, req.dump()); lastDump = Date.now(); return parse[CMD.DUMP](reply, d.info); }
 async function getStep(i, d = dev) { return parse[CMD.STEP_GET](await sessionRequest(d, req.stepGet(i))); }
 
@@ -3055,11 +3282,11 @@ async function load(d) {
   try {
     resetSets();                                    /* a new session starts with no remembered control state */
     /* the first frame after opening the port can be lost: a few tries */
-    d.info = parse[CMD.INFO](await sessionRequest(d, req.info(), { timeout: 500, retries: 3 }));
+    d.info = d.info || parse[CMD.INFO](await sessionRequest(d, req.info(), { timeout: 500, retries: 3 }));
     $("version").textContent = d.info.version;
     const total = d.info.pcount + d.info.gcount;
-    for (let i = 0; i < d.info.pcount; i++) { sayK("reading", `${i + 1}/${total}`); d.pdesc[i] = await getDescOrNull(0, i, d); }
-    for (let i = 0; i < d.info.gcount; i++) { sayK("reading", `${d.info.pcount + i + 1}/${total}`); d.gdesc[i] = await getDescOrNull(1, i, d); }
+    for (let i = 0; i < d.info.pcount; i++) { sayK("reading", `${i + 1}/${total}`); d.pdesc[i] = await getDesc(0, i, d); }
+    for (let i = 0; i < d.info.gcount; i++) { sayK("reading", `${d.info.pcount + i + 1}/${total}`); d.gdesc[i] = await getDesc(1, i, d); }
     d.titles = [];
     d.names = [];
     for (let e = 0; e < d.info.nengines; e++) {
@@ -3101,14 +3328,13 @@ async function load(d) {
     sayK("ready");
   } finally { releaseBusy(); }
 }
-async function getDescOrNull(s, i, d = dev) { try { return await getDesc(s, i, d); } catch (e) { if (e.message === "closed") throw e; return null; } }
 
 /* rebuilds the controls only when the engine or its parameters changed (a slider being dragged survives) */
 async function rereadEngineDesc(d = dev) {
   assertSession(d);
   const pe0 = d.info.pe0;
   const before = JSON.stringify(d.pdesc.slice(pe0));
-  for (let i = 0; i < 8 && pe0 + i < d.info.pcount; i++) d.pdesc[pe0 + i] = await getDescOrNull(0, pe0 + i, d);
+  for (let i = 0; i < 8 && pe0 + i < d.info.pcount; i++) d.pdesc[pe0 + i] = await getDesc(0, pe0 + i, d);
   if (d.built !== d.dump.engine || JSON.stringify(d.pdesc.slice(pe0)) !== before) buildGroups();
 }
 
@@ -5175,7 +5401,7 @@ function downloadBytes(name, bytes) {
 $("fm6export").addEventListener("click", () => downloadBytes(`${fileSlug(FM6.name(fm6v))}.syx`, FM6.singleSysex(fm6v)));
 
 $("connect").addEventListener("click", () => {
-  if (dev) { wantConnected = false; disconnect(); } else connect();
+  if (connecting || dev) { wantConnected = false; disconnect(); } else connect();
 });
 applyLang();
 showTab(tab);

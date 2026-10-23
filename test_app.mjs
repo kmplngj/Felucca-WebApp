@@ -14,6 +14,7 @@ import { join } from "node:path";
 import vm from "node:vm";
 import * as proto from "./app/src/proto.js";
 import { Device } from "./app/src/device.js";
+import { runDiscoveryChecks, prepareDiscoveryPages } from "./test_discovery.mjs";
 
 let failed = 0;
 const ok = (cond, what) => { console.log(`${what.padEnd(64)} ${cond ? "ok" : "FAIL"}`); if (!cond) failed++; };
@@ -22,6 +23,12 @@ const APP = join(HERE, "app");
 const py = (...args) => execFileSync("python3", args, { encoding: "utf8" });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const until = async (cond, ms = 2000) => { const t = Date.now(); while (!cond() && Date.now() - t < ms) await sleep(10); return cond(); };
+
+await runDiscoveryChecks("app");
+execFileSync("python3", [join(HERE, "gen_discovery.py"), "--check"]);
+mkdirSync(join(HERE, "build/discovery"), { recursive: true });
+execFileSync("python3", [join(HERE, "bundle.py"), join(APP, "index.html"), join(HERE, "build/discovery/editor.html")]);
+prepareDiscoveryPages();
 
 /* ------------------------------------------------------------- device.js --- */
 {
@@ -974,7 +981,7 @@ function dir0() { return mkdtempSync(join(tmpdir(), "felucca-tokens-")); }
   const sources = [...files, ...(page ? [page] : []), ...(existsSync(join(APP, "app.css")) ? [join(APP, "app.css")] : [])];
   const colours = sources.filter((f) => /#[0-9a-f]{3,6}\b|rgba?\(/i.test(readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "")) && !f.endsWith("proto.js"));
   ok(colours.length === 0, "page: no colour outside tokens.css" + (colours.length ? " (" + colours.map((f) => f.split("/").pop()).join(", ") + ")" : ""));
-  ok(sources.every((f) => /SPDX-License-Identifier: GPL-3\.0-only/.test(readFileSync(f, "utf8")) && /Leo Kuroshita \(@kurogedelic\), Hügelton Instruments/.test(readFileSync(f, "utf8"))),
+  ok(sources.every((f) => /SPDX-License-Identifier: GPL-3\.0-only/.test(readFileSync(f, "utf8")) && /Copyright \(C\) \d{4} [^\n]+/.test(readFileSync(f, "utf8"))),
     "page: every source has the SPDX and copyright header");
   ok(existsSync(join(APP, "fonts/InterTight-subset.ttf")) && existsSync(join(HERE, "fukiai.ttf")), "page: the fonts are there");
 }

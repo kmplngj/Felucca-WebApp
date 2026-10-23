@@ -18,6 +18,7 @@ import { join } from "node:path";
 import vm from "node:vm";
 import { buildFeluccaPackage, logicalImage, productOf } from "./fm1pkg.js";
 import { Updater, pack7, unpack7 } from "./fm1ota.js";
+import { runDiscoveryChecks } from "./test_discovery.mjs";
 
 let failed = 0;
 const ok = (cond, what) => { console.log(`${what.padEnd(64)} ${cond ? "ok" : "FAIL"}`); if (!cond) failed++; };
@@ -37,6 +38,7 @@ const html = readFileSync(join(HERE, "editor.html"), "utf8");
 /* FELUCCA_PROTO=app: the protocol checks run against the new editor's module (app/src/proto.js, the same section
    moved out; its export list dropped) instead of editor.html */
 const PROTO_APP = process.env.FELUCCA_PROTO === "app";
+if (!PROTO_APP) await runDiscoveryChecks("classic");
 const protoSrc = PROTO_APP ? readFileSync(join(HERE, "app/src/proto.js"), "utf8") : html;
 const proto = protoSrc.slice(protoSrc.indexOf("/*PROTO-BEGIN*/"), protoSrc.indexOf("/*PROTO-END*/"));
 if (PROTO_APP) console.log("protocol section: app/src/proto.js");

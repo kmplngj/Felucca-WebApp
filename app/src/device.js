@@ -8,8 +8,8 @@
 
 import { captureBackup, captureObject, conditionalProjects, projectFile, putObject, readBackup, readProject, restoreBackup, assertBackupCompatible, RAW_CMD, rawManifest, captureRawObject, captureRawStore } from "../../fm1backup.js";
 import { CMD, F, FLASH_OPT, engineAvailable, catalogLabel, FM6, fm6Bank, midiLearn, Link, parseMotionAll, P_CHORD, SMP, auditionPatch, bank, capturePatch, fromDigital, mixer, parse, paramKeys, readDeviceMenu, readDevicePreferences, req, reservedFm4, startWatch, upName } from "./proto.js";
+import { discoveryFor, validateMidiDesc } from "./discovery.js";
 
-export const isFelucca = (p) => /felucca/i.test(p.name || "") && p.state !== "disconnected";
 export const P = { LEVEL: 0, SLEN: 29 };
 /* the layouts this editor knows (P_COUNT, P_E0 with G_COUNT 27; editor.html knownLayout) */
 export const knownLayout = (info) => info.gcount === 27 &&
@@ -24,6 +24,8 @@ export class Device {
     this.access = access;
     this.now = opt.clock || (() => Date.now());
     this.hidden = opt.hidden || (() => false);
+    this.connectionOptions = opt;
+    this.abort = new AbortController();
     this.handlers = new Map();
     this.info = null; this.pdesc = []; this.gdesc = []; this.names = []; this.titles = [];
     this.dump = null; this.steps = []; this.slotUsed = [null, null, null, null]; this.smp = null; this.keys = null;
@@ -44,30 +46,31 @@ export class Device {
   /* ---- the session ---- */
   /* finds the device's ports and reads everything; throws "nodevice", or the request's error */
   async open() {
-    const input = [...this.access.inputs.values()].find(isFelucca);
-    const output = [...this.access.outputs.values()].find(isFelucca);
-    if (!input || !output) throw new Error("nodevice");
-    this.input = input; this.output = output;
-    this.link = new Link((d) => output.send(d), {
-      timeout: 300,
-      onUnknown: (f) => this.emit("unknown", f),      /* (Felucca-mirror: frames that are not replies come here) */
-      onTimeout: () => this.emit("error", new Error("noreply")),
-      onPush: (f) => this.onPush(f),
-      onGap: () => { this.rewatch = true; },
-    });
-    input.onmidimessage = (e) => this.link.receive(e.data);
-    if (input.open) await input.open().catch(() => {});
-    await this.load();
-    this.start();
+    try {
+      const session = await discoveryFor(this.access, { CMD, F, Link, parse, req }).open({
+        select: this.connectionOptions.selectPorts, preferred: this.connectionOptions.preferred, signal: this.abort.signal,
+        onPair: (pair) => { this.pendingPair = pair; this.emit("ports", pair); },
+      });
+      if (this.closed) { session.close(); throw new Error("closed"); }
+      this.session = session;
+      this.input = session.input; this.output = session.output; this.link = session.link; this.info = session.info;
+      this.link.onUnknown = (f) => this.emit("unknown", f);
+      this.link.onTimeout = () => this.emit("error", new Error("noreply"));
+      this.link.onPush = (f) => this.onPush(f);
+      this.link.onGap = () => { this.rewatch = true; };
+      await this.load();
+      this.assert(); this.start();
+    } catch (error) { this.close(); throw error; }
   }
 
   close(reason = "disconnected") {
     if (this.closed) return;
-    this.closed = true;
+    this.closed = true; this.closeReason = reason;
+    this.abort.abort();
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     if (this.link) this.link.close();
-    if (this.input) this.input.onmidimessage = null;
+    if (this.session) this.session.close();
     this.busyEpoch++; this.busy = 0;
     this.emit("closed", reason);
   }
@@ -88,8 +91,8 @@ export class Device {
   }
   async idle() { while (this.busy && !this.closed) await sleep(20); this.assert(); }
 
-  async descOrNull(scope, i) {
-    try { return parse[CMD.DESC](await this.rq(req.desc(scope, i))); } catch (e) { if (e.message === "closed") throw e; return null; }
+  async readDesc(scope, i) {
+    return validateMidiDesc(await this.rq(req.desc(scope, i)), scope, i, { F });
   }
   async readDump() { const d = parse[CMD.DUMP](await this.rq(req.dump()), this.info); this.lastDump = this.now(); return d; }
 
@@ -98,11 +101,11 @@ export class Device {
     const release = this.beginBusy();
     try {
       /* the first frame after opening the port can be lost: a few tries */
-      this.info = parse[CMD.INFO](await this.rq(req.info(), { timeout: 500, retries: 3 }));
+      this.info = this.info || parse[CMD.INFO](await this.rq(req.info(), { timeout: 500, retries: 3 }));
       const i = this.info, total = i.pcount + i.gcount;
       this.emit("progress", { what: "info", info: i });
-      for (let k = 0; k < i.pcount; k++) { this.emit("progress", { what: "desc", n: k + 1, total }); this.pdesc[k] = await this.descOrNull(0, k); }
-      for (let k = 0; k < i.gcount; k++) { this.emit("progress", { what: "desc", n: i.pcount + k + 1, total }); this.gdesc[k] = await this.descOrNull(1, k); }
+      for (let k = 0; k < i.pcount; k++) { this.emit("progress", { what: "desc", n: k + 1, total }); this.pdesc[k] = await this.readDesc(0, k); }
+      for (let k = 0; k < i.gcount; k++) { this.emit("progress", { what: "desc", n: i.pcount + k + 1, total }); this.gdesc[k] = await this.readDesc(1, k); }
       this.names = []; this.titles = [];
       for (let e = 0; e < i.nengines; e++) {
         if (!engineAvailable(i, e)) { this.names[e] = []; this.titles[e] = ["-", "-"]; continue; }
@@ -719,7 +722,7 @@ export class Device {
   }
   async rereadEngineDesc() {
     const pe0 = this.info.pe0;
-    for (let k = 0; k < 8 && pe0 + k < this.info.pcount; k++) this.pdesc[pe0 + k] = await this.descOrNull(0, pe0 + k);
+    for (let k = 0; k < 8 && pe0 + k < this.info.pcount; k++) this.pdesc[pe0 + k] = await this.readDesc(0, pe0 + k);
   }
   /* ---- MENU settings (1.0.4: INFO menuCount; MENU_DESC 72, MENU_SET 73): not pushed, read when settings show ---- */
   async readMenu() {

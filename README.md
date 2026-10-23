@@ -14,6 +14,8 @@ sent to a server. The site is published at https://hugelton.github.io/Felucca/.
 
 ```sh
 python3 serve.py            # http://localhost:8766/app/index.html?mock=1
+node test_discovery.mjs     # actual connection handshakes, endpoint choice and cleanup (mock MIDI)
+python3 gen_discovery.py --check # retained editor consumes the canonical discovery policy
 node test_settings.mjs      # MENU replies, sparse IDs and AUTO OFF constraints (mock only)
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
@@ -99,6 +101,34 @@ Leave `firmware_revision` empty for the recorded pin. An optional full 40-charac
 clearly marked test-only contract comparison; it does not change the pin or qualify a firmware release. For a
 new workflow's first PR, use its automatic pull-request run before merging, because GitHub only registers manual
 dispatch once the workflow exists on the default branch. No workflow here publishes, flashes or releases anything.
+
+## MIDI connection and cached names
+
+Both editors recognize candidate ports named Felucca, FM-1, SLOOP, Clipper, Conflux, Composite, Sinco or
+USB-MIDI, including names retained by an operating system after a firmware change. Names only identify
+candidates. A connection must pass a bounded, read-only Felucca INFO check and coherent parameter descriptors;
+firmware version text does not enable capabilities. Installer/OTA endpoints and unrelated MIDI gear are excluded.
+
+A single matching Felucca input/output pair connects directly. Cached/generic names or multiple candidates open
+**Select MIDI ports**: choose the input and output of the same FM-1, then Connect. The list shows each endpoint's
+name, manufacturer and endpoint ID; those IDs are not a shared device identity. If identical devices cannot be
+distinguished, unplug the others before choosing. The editor never probes every input/output combination.
+Cancel stops an attempt and retires its listener. A failed pair does not authorize another pair.
+
+Unplugging a selected device disconnects even when its cached name differs from Felucca. Reappearance of its
+selected endpoint IDs requalifies that pair; other connected devices are not substituted. If the OS creates new
+IDs, click Connect and select the endpoints again. Changing an already attempted input to a different output
+fails closed until the device is physically reconnected. The protocol has no nonce or physical device UUID;
+selection establishes user intent and cannot guarantee correlation of delayed replies already queued by the OS.
+
+`app/src/discovery.js` is canonical for both editors. Run `python3 gen_discovery.py` after changing it; the checked
+inline copy keeps `editor.html` standalone. After `node test_app.mjs` prepares fresh browser pages, serve this
+checkout and open `/test_fixtures/menu/discovery.html`: it must report PASS for source, retained and bundled
+editors. Append `?manual=app`, `?manual=classic` or `?manual=bundle` to inspect the actual picker interactively
+with two fake USB-MIDI devices and explicit unplug/replug controls. Its independently routed fake devices cover selection, no cross-pair probing, cancel/late INFO,
+replacement cleanup and unplug/reconnect during loading. These are browser mocks; real USB pairing, permission,
+cached-name and re-enumeration checks on the supported host/browser still require an FM-1. No firmware installation
+or physical-device validation is implied by a green client gate.
 
 ## Device settings
 
