@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Causal startup regressions: a failed attempt cannot retain an older green result."""
 import json
+import hashlib
 import importlib.util
 import os
 from pathlib import Path
@@ -10,7 +11,59 @@ import sys
 import tempfile
 import time
 import unittest
-from check import firmware_environment, owned_run
+from unittest.mock import patch
+from check import firmware_environment, font_input, owned_run
+
+
+class FontInput(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="felucca-font-input-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = b"unchanged source fixture"
+        self.digest = hashlib.sha256(self.source).hexdigest()
+        expected = patch("check.INTERTIGHT_SHA256", self.digest)
+        expected.start()
+        self.addCleanup(expected.stop)
+
+    def write(self, relative, content=None):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self.source if content is None else content)
+        return path
+
+    def test_legacy_and_relocated_source_have_same_provenance(self):
+        legacy = self.write("assets/fonts/InterTight[wght].ttf")
+        before = font_input(self.root)
+        relocated = self.write("docs/manual/fonts/InterTight[wght].ttf")
+        legacy.unlink()
+        after = font_input(self.root)
+        self.assertEqual(before["path"], str(legacy.resolve()))
+        self.assertEqual(after["path"], str(relocated.resolve()))
+        self.assertEqual(before["sha256"], after["sha256"])
+        self.assertEqual(after["selection"], "firmware")
+
+    def test_explicit_override_wins_and_bad_override_never_falls_back(self):
+        self.write("assets/fonts/InterTight[wght].ttf")
+        chosen = self.write("chosen/font.ttf")
+        self.assertEqual(font_input(self.root, str(chosen)), {
+            "path": str(chosen.resolve()), "sha256": self.digest, "selection": "FELUCCA_INTERTIGHT"})
+        chosen.unlink()
+        with self.assertRaisesRegex(RuntimeError, "source missing.*chosen/font.ttf"):
+            font_input(self.root, str(chosen))
+        chosen.write_bytes(b"wrong font")
+        with self.assertRaisesRegex(RuntimeError, "SHA-256 mismatch.*chosen/font.ttf"):
+            font_input(self.root, str(chosen))
+
+    def test_missing_both_locations_fails_with_both_paths(self):
+        with self.assertRaisesRegex(RuntimeError, "source missing.*assets/fonts/.*docs/manual/fonts/"):
+            font_input(self.root)
+
+    def test_wrong_legacy_source_does_not_hide_behind_valid_relocated_source(self):
+        self.write("assets/fonts/InterTight[wght].ttf", b"wrong source")
+        self.write("docs/manual/fonts/InterTight[wght].ttf")
+        with self.assertRaisesRegex(RuntimeError, "SHA-256 mismatch.*assets/fonts/"):
+            font_input(self.root)
 
 
 class AttemptSummary(unittest.TestCase):
@@ -164,6 +217,28 @@ class AttemptSummary(unittest.TestCase):
         uv.chmod(0o755)
         env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]}
         self.assert_failed_attempt(self.run_gate("--firmware", str(firmware), env=env), "locked runner exited 73")
+
+    def test_explicit_font_override_reaches_locked_runner(self):
+        firmware, revision = self.firmware_checkout()
+        self.pin.write_text(json.dumps({"repository": "kmplngj/Felucca", "revision": revision}))
+        marker = Path(self.temp.name) / "override.json"
+        env = self.fake_tool("uv", "import os,json\nfrom pathlib import Path\n"
+                             f"Path({str(marker)!r}).write_text(json.dumps(os.environ.get('FELUCCA_INTERTIGHT')))\n"
+                             "raise SystemExit(73)\n")
+        self.run_gate("--firmware", str(firmware), env={**env, "FELUCCA_INTERTIGHT": "chosen-font.ttf"})
+        self.assertEqual(json.loads(marker.read_text()), str((self.root / "chosen-font.ttf").resolve()))
+
+    def test_missing_font_replaces_previous_green_without_skip(self):
+        firmware, revision = self.firmware_checkout()
+        self.git_checkout(self.root)
+        self.pin.write_text(json.dumps({"repository": "kmplngj/Felucca", "revision": revision}))
+        self.previous_green()
+        env = self.fake_tool("node", "print('v22 fixture')\n")
+        env.pop("FELUCCA_INTERTIGHT", None)  # Exercise missing discovery, independent of the caller's valid override.
+        completed = self.run_gate("--firmware", str(firmware), "--inside-locked-env", env=env)
+        self.assert_failed_attempt(completed, "Inter Tight source missing")
+        self.assertEqual(json.loads(self.summary.read_text())["checks"], [])
+        self.assertNotIn(" skip", completed.stdout)
 
     def test_print_pin_does_not_create_artifacts(self):
         completed = self.run_gate("--print-firmware-revision")
