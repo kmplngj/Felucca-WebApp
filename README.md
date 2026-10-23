@@ -135,7 +135,9 @@ inline copy keeps `editor.html` standalone. After `node test_app.mjs` prepares f
 checkout and open `/test_fixtures/menu/discovery.html`: it must report PASS for source, retained and bundled
 editors. Append `?manual=app`, `?manual=classic` or `?manual=bundle` to inspect the actual picker interactively
 with two fake USB-MIDI devices and explicit unplug/replug controls. Its independently routed fake devices cover selection, no cross-pair probing, cancel/late INFO,
-replacement cleanup and unplug/reconnect during loading. These are browser mocks; real USB pairing, permission,
+replacement cleanup and unplug/reconnect during loading. `/test_fixtures/menu/permission.html` separately checks
+overlapping permission grants in both orders and stale/cancelled denials, using distinct synthetic access objects.
+These are browser mocks; real USB pairing, permission,
 cached-name and re-enumeration checks on the supported host/browser still require an FM-1. No firmware installation
 or physical-device validation is implied by a green client gate.
 

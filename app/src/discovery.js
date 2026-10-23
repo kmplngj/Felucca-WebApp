@@ -127,7 +127,7 @@ export class MidiDiscovery {
       }
       link.receive(data);
     };
-    const opened = [];
+    const opened = new Map();
     const close = () => {
       if (closed) return;
       closed = true; link.close();
@@ -136,7 +136,7 @@ export class MidiDiscovery {
       for (const port of [input, output]) {
         if (this.owners.get(port) !== owner) continue;
         // Include late open completion: a replacement must not acquire the port before cleanup settles.
-        const cleanup = Promise.allSettled(opened).then(() => this.owners.get(port) === owner ? port.close?.() : null).catch(() => {});
+        const cleanup = Promise.allSettled([opened.get(port)]).then(() => this.owners.get(port) === owner ? port.close?.() : null).catch(() => {});
         this.closing.set(port, cleanup);
         cleanup.finally(() => {
           if (this.closing.get(port) === cleanup) this.closing.delete(port);
@@ -150,8 +150,8 @@ export class MidiDiscovery {
       if (this.owners.has(input) || this.owners.has(output)) throw midiError("portBusy");
       acquired = true;
       this.owners.set(input, owner); this.owners.set(output, owner);
-      for (const port of [input, output]) opened.push(Promise.resolve().then(() => port.open?.()));
-      await Promise.race([Promise.all(opened), stop]);
+      for (const port of [input, output]) opened.set(port, Promise.resolve().then(() => port.open?.()));
+      await Promise.race([Promise.all([...opened.values()]), stop]);
       if (signal.aborted) throw midiError("closed");
       input.onmidimessage = handler;
       const a = await Promise.race([link.request(req.info(), { timeout: 500, retries: 3, quiet: true }), stop]);

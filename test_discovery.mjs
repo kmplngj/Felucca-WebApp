@@ -23,7 +23,7 @@ export function prepareDiscoveryPages() {
   for (const [index, path] of ["app/index.html", "editor.html", "build/discovery/editor.html"].entries()) {
     const base = index === 1 ? "/" : "/app/";
     const init = `<head><base href="${base}"><script>
-      Object.defineProperty(navigator,'requestMIDIAccess',{value:async()=>{parent.discoveryPermissionEntered=true;await parent.discoveryPermission;return parent.discoveryAccess;}});
+      Object.defineProperty(navigator,'requestMIDIAccess',{value:async()=>{if(parent.discoveryRequestAccess)return parent.discoveryRequestAccess();parent.discoveryPermissionEntered=true;await parent.discoveryPermission;return parent.discoveryAccess;}});
       addEventListener('error',e=>parent.discoveryError(e.message));
       addEventListener('unhandledrejection',e=>parent.discoveryError(String(e.reason)));
       </script>`;
@@ -124,13 +124,32 @@ export async function runDiscoveryChecks(mode) {
       assert.equal(m.sent.length, 0, "failed open cannot send or leave an owned handler");
       assert.equal(m.input.onmidimessage, null);
     }
-    {
+    for (const held of ["input", "output"]) {
       const m = device(), abort = new AbortController(); let release;
-      m.input.open = () => new Promise((resolve) => { release = resolve; });
+      m[held].open = () => new Promise((resolve) => { release = resolve; });
       const pending = d.discoveryFor(m.access, p).open({ signal: abort.signal });
       await sleep(0); abort.abort(); await assert.rejects(pending, /closed/);
-      assert.equal(m.input.closes, 0); release(); await sleep(0); await sleep(0);
+      await sleep(0);
+      assert.equal(m[held].closes, 0);
+      assert.equal(m[held === "input" ? "output" : "input"].closes, 1, "a hung peer must not prevent this port from closing");
+      release(); await sleep(0); await sleep(0);
       assert.equal(m.input.closes, 1); assert.equal(m.output.closes, 1);
+    }
+    {
+      const a = device("USB-MIDI", "late"), b = device("USB-MIDI", "replacement"), abort = new AbortController(); let release;
+      a.input.open = () => new Promise((resolve) => { release = resolve; });
+      const access = { inputs: new Map([[a.input.id, a.input], [b.input.id, b.input]]), outputs: new Map([[a.output.id, a.output]]) };
+      const policy = d.discoveryFor(access, p);
+      const old = policy.open({ select: async () => a.pair, signal: abort.signal });
+      await sleep(0); abort.abort(); await assert.rejects(old, /closed/); await sleep(0);
+      // Explicitly approved replacement route: the released output now delivers to the replacement input.
+      a.output.send = b.output.send;
+      const current = await policy.open({ select: async () => ({ input: b.input.id, output: a.output.id }) });
+      release(); await sleep(0); await sleep(0);
+      assert.equal(a.input.closes, 1); assert.equal(a.output.closes, 1, "late old open must not close the replacement's acquired peer");
+      assert.equal(current.link.closed, false); assert.notEqual(b.input.onmidimessage, null);
+      await current.link.request(p.req.info()); current.close(); await sleep(0);
+      assert.equal(a.output.closes, 2);
     }
     {
       const m = device(), policy = d.discoveryFor(m.access, p); let release;

@@ -227,10 +227,16 @@ async function connect(reconnect = false) {
   relabel();
   try {
     if (!access) {
-      if (MOCK) access = makeMockDevice({ legacy: QS.get("legacy") === "1", catalog: QS.get("catalog") === "1" || QS.get("raw") === "1", test14: QS.get("test14") === "1", omit: QS.has("omit") ? Number(QS.get("omit")) : undefined,
+      let granted;
+      if (MOCK) granted = makeMockDevice({ legacy: QS.get("legacy") === "1", catalog: QS.get("catalog") === "1" || QS.get("raw") === "1", test14: QS.get("test14") === "1", omit: QS.has("omit") ? Number(QS.get("omit")) : undefined,
         rawStore: QS.get("raw") === "1" }).access;   /* (&raw=1: the raw store export of #456, with demo legacy objects) */
       else if (!navigator.requestMIDIAccess) { sayK("nomidi"); return; }
-      else { try { access = await navigator.requestMIDIAccess({ sysex: true }); } catch { sayK("denied"); return; } }
+      else {
+        try { granted = await navigator.requestMIDIAccess({ sysex: true }); }
+        catch { if (epoch === connectionEpoch && !abort.signal.aborted) sayK("denied"); return; }
+      }
+      if (epoch !== connectionEpoch || abort.signal.aborted) return;
+      access = granted;
       for (const port of [...access.inputs.values(), ...access.outputs.values()]) portStates.set(port, port.state);
     }
     if (epoch !== connectionEpoch || abort.signal.aborted) return;
