@@ -57,7 +57,7 @@ git -C ../Felucca-ci submodule update --init --recursive
 python3 ci/check.py --firmware ../Felucca-ci
 ```
 
-`ci/check.py` enters `uv run --locked --group build` automatically. It generates current firmware headers,
+`ci/check.py` enters `uv run --locked --group build` automatically. It checks its startup regressions, then generates firmware headers,
 full and retained-editor descriptor dumps, and normal/CPU2=0 MENU fixtures, then runs both protocol suites,
 backup, settings, app/build/generator, catalog and legacy-migration checks. The retained editor mocks use the
 firmware's explicit `descdump --legacy-web-mock` scope for engine IDs 0..13. Native comparisons keep their
@@ -70,7 +70,9 @@ These checks exercise mock MIDI; they do not establish real USB, audio, installa
 
 Read `build/ci/summary.json` first; it records revisions, tool versions, fixture hashes, results and skips. Full
 logs and browser DOM output are beside it and are uploaded by CI for seven days. Required generated-input
-comparisons may not skip. The retained classic editor's absent MENU UI, FM6 bank sender, MIDI LEARN and CUSTOM
+comparisons may not skip. Normal invocations invalidate the previous summary before startup checks; a missing
+checkout, wrong revision or failed uv startup records a failed attempt. Printing the pin creates no artifacts.
+The retained classic editor's absent MENU UI, FM6 bank sender, MIDI LEARN and CUSTOM
 palette checks remain explicit feature skips. The historical package comparison also remains an explicit skip:
 it needs an official `FM-1_v15.fwsc` and target-build inputs that this host-only gate does not provide. A green
 gate does not claim that comparison passed; its skip appears in the run summary.

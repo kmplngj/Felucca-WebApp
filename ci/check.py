@@ -19,7 +19,6 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-PIN = json.loads((ROOT / "ci/firmware.json").read_text())
 PACKAGE_SKIP = "packages: skipped (needs FM-1_v15.fwsc and a felucca/build.py build)"
 CLASSIC_SKIPS = {
     "editor: MENU settings (this editor has none)",
@@ -39,6 +38,16 @@ def unexpected_skips(text, suite):
     allowed = {PACKAGE_SKIP} if suite in ("classic", "app-protocol") else set()
     return skips, [line for line in skips if line not in allowed and not (
         suite == "classic" and line.removesuffix("skip").strip() in CLASSIC_SKIPS)]
+
+
+def firmware_pin(override):
+    pin = json.loads((ROOT / "ci/firmware.json").read_text())
+    if not isinstance(pin, dict) or pin.get("repository") != "kmplngj/Felucca":
+        raise ValueError("firmware pin must identify kmplngj/Felucca")
+    revision = override or pin.get("revision")
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("firmware revision must be a full lowercase commit SHA")
+    return pin, revision
 
 
 def browser_tests(directory, stage, env, results):
@@ -91,44 +100,59 @@ def browser_tests(directory, stage, env, results):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--firmware", type=Path, default=ROOT.parent / "Felucca")
-    parser.add_argument("--firmware-revision", default=PIN["revision"],
+    parser.add_argument("--firmware-revision",
                         help="Exact test-only override; normal CI uses ci/firmware.json")
     parser.add_argument("--print-firmware-revision", action="store_true")
     parser.add_argument("--inside-locked-env", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    revision = args.firmware_revision or PIN["revision"]
-    if not re.fullmatch(r"[0-9a-f]{40}", revision):
-        parser.error("firmware revision must be a full lowercase commit SHA")
     if args.print_firmware_revision:
+        try:
+            _pin, revision = firmware_pin(args.firmware_revision)
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
         print(revision)
         return 0
-    firmware = args.firmware.resolve()
-    if output("git", "rev-parse", "HEAD", cwd=firmware) != revision:
-        parser.error(f"firmware checkout must be exactly {revision}")
-    if output("git", "status", "--porcelain", "--untracked-files=no", cwd=firmware):
-        parser.error("firmware tracked sources/submodules must be clean")
-    submodules = output("git", "submodule", "status", "--recursive", cwd=firmware)
-    # Preserve git's leading space for an initialized, matching submodule.
-    if any(line.startswith(("-", "+", "U")) for line in submodules.splitlines()):
-        parser.error("initialize firmware submodules at their pinned commits")
-    env = {k: v for k, v in os.environ.items() if not k.startswith("FELUCCA_")}
-    env.update(PYTHONDONTWRITEBYTECODE="1", FELUCCA_PROFILE="standard", FELUCCA_FONT="m8stealth")
-    if not args.inside_locked_env:
-        return subprocess.call(["uv", "run", "--project", str(firmware), "--locked", "--group", "build",
-                                "python", str(Path(__file__).resolve()), *sys.argv[1:], "--inside-locked-env"],
-                               cwd=ROOT, env=env)
     directory = ROOT / "build/ci"
     directory.mkdir(parents=True, exist_ok=True)
+    # Invalidate a previous green result before pin/checkout/tool preflight can fail.
+    results = {"status": "running", "checks": []}
+    (directory / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
+    try:
+        pin, revision = firmware_pin(args.firmware_revision)
+        results.update(firmware_repository=pin["repository"], firmware_revision=revision)
+        firmware = args.firmware.resolve()
+        if output("git", "rev-parse", "HEAD", cwd=firmware) != revision:
+            raise RuntimeError(f"firmware checkout must be exactly {revision}")
+        if output("git", "status", "--porcelain", "--untracked-files=no", cwd=firmware):
+            raise RuntimeError("firmware tracked sources/submodules must be clean")
+        submodules = output("git", "submodule", "status", "--recursive", cwd=firmware)
+        if any(line.startswith(("-", "+", "U")) for line in submodules.splitlines()):
+            raise RuntimeError("initialize firmware submodules at their pinned commits")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("FELUCCA_")}
+        env.update(PYTHONDONTWRITEBYTECODE="1", FELUCCA_PROFILE="standard", FELUCCA_FONT="m8stealth")
+        if not args.inside_locked_env:
+            done = subprocess.call(["uv", "run", "--project", str(firmware), "--locked", "--group", "build",
+                                    "python", str(Path(__file__).resolve()), *sys.argv[1:], "--inside-locked-env"],
+                                   cwd=ROOT, env=env)
+            child = json.loads((directory / "summary.json").read_text())
+            if done or child.get("status") != "passed":
+                results = child
+                raise RuntimeError(f"locked runner exited {done}: {child.get('error', 'no completed passing summary')}")
+            return 0
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        results.update(status="failed", error=str(error))
+        (directory / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
+        print(error, file=sys.stderr)
+        return 1
     fixtures = firmware / "build/host/webapp-ci"
     fixtures.mkdir(parents=True, exist_ok=True)
     cc = shlex.split(env.get("CC", "cc"))
-    results = {"status": "running", "firmware_repository": PIN["repository"], "firmware_revision": revision,
-               "firmware_override": revision != PIN["revision"], "submodules": submodules,
+    results.update({"firmware_override": revision != pin["revision"], "submodules": submodules,
                "client_revision": output("git", "rev-parse", "HEAD"),
                "client_dirty": output("git", "status", "--porcelain"), "node": output("node", "--version"),
                "python": sys.version, "uv": output("uv", "--version"), "cc": output(*cc, "--version").splitlines()[0],
-               "profile": "standard", "checks": []}
-    # An interrupted rerun must not leave the previous run's green summary in place.
+               "profile": "standard"})
+    # Include tool/revision provenance once the locked environment is ready.
     (directory / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
 
     def stage(name, command, *, cwd=ROOT, timeout=600, stdout=None):
@@ -150,6 +174,7 @@ def main():
         print(f"{name}: PASS" + (f" ({len(skips)} documented skips)" if skips else ""), flush=True)
 
     try:
+        stage("runner-regressions", [sys.executable, "-m", "unittest", "discover", "-s", "ci", "-p", "test_*.py", "-v"])
         stage("generate", [sys.executable, "-c", "import sys; sys.path.insert(0, 'tools'); import build; build.generate()"], cwd=firmware)
         flags = ["-w", "-Ibuild/gen", "-Ifirmware/src"]
         stage("compile-descriptors", [*cc, *flags, "tests/descdump.c", "-lm", "-o", str(fixtures / "descdump")], cwd=firmware)
