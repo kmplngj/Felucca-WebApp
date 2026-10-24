@@ -73,11 +73,17 @@ try {
     check(a.sent.some((r) => r.cmd === CMD.WATCH), "normal live session survives qualification");
     a.input.state = a.output.state = "disconnected";
     window.discoveryAccess.onstatechange({ port: a.input });
+    window.discoveryAccess.onstatechange({ port: a.output });
     await until(() => !ready(), "selected cached-name unplug detected");
     check(b.sent.length === 0, "remaining device never substituted");
-    a.input.state = a.output.state = "connected";
+    a.input.state = "connected";
     window.discoveryAccess.onstatechange({ port: a.input });
-    await until(ready, "same selected pair reconnects");
+    // The actual 800 ms retry must encounter the missing selected output while B is still complete.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    check(!ready() && b.sent.length === 0 && !doc.querySelector(".midi-picker"), "staggered return neither substitutes another pair nor prompts");
+    a.output.state = "connected";
+    window.discoveryAccess.onstatechange({ port: a.output });
+    await until(ready, "late remembered output automatically reconnects");
     check(a.sent.filter((r) => r.cmd === CMD.INFO).length === 2 && b.sent.length === 0, "reconnect requalifies exact pair");
     button().click();
     let held;
@@ -97,6 +103,7 @@ try {
     check(a.input.onmidimessage === null && b.input.onmidimessage, "old cleanup preserves replacement handler");
     button().click(); await until(() => !ready(), "replacement disconnects");
     let loading;
+    const otherTraffic = b.sent.length;
     a.output.send = (bytes) => {
       const request = unframe(bytes);
       if (request?.cmd === CMD.DESC && request.a[0] === 0 && request.a[1] === 20) loading = true;
@@ -105,11 +112,16 @@ try {
     button().click(); await choose(a, a); await until(() => loading, "descriptor-loading barrier");
     a.input.state = a.output.state = "disconnected";
     window.discoveryAccess.onstatechange({ port: a.input });
+    window.discoveryAccess.onstatechange({ port: a.output });
     await until(() => !/Cancel|やめる/.test(button().textContent), "loading unplug retires attempt");
     a.output.send = a.send;
-    a.input.state = a.output.state = "connected";
+    a.output.state = "connected";
+    window.discoveryAccess.onstatechange({ port: a.output });
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    check(!ready() && b.sent.length === otherTraffic, "missing remembered input does not substitute B");
+    a.input.state = "connected";
     window.discoveryAccess.onstatechange({ port: a.input });
-    await until(ready, "unplug during loading preserves same-pair reconnect intent");
+    await until(ready, "late remembered input after loading unplug automatically reconnects");
     button().click();
 
     check(errors.length === 0, path + " page errors: " + errors.join(", "));

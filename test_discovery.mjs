@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import vm from "node:vm";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { execFileSync } from "node:child_process";
 import * as appProtocol from "./app/src/proto.js";
 import { Device } from "./app/src/device.js";
 import * as appDiscovery from "./app/src/discovery.js";
@@ -33,6 +34,8 @@ export function prepareDiscoveryPages() {
 }
 
 export async function runDiscoveryChecks(mode) {
+  if (mode === "app")
+    execFileSync("python3", [fileURLToPath(new URL("test_gen_discovery.py", import.meta.url))], { stdio: "inherit" });
   const { p, d } = harness(mode), mocks = [];
   function device(name = "Felucca", suffix = "", opt = {}) {
     const mock = p.makeMockDevice({ auto: false, ...opt }); mocks.push(mock);
@@ -76,6 +79,26 @@ export async function runDiscoveryChecks(mode) {
       assert.equal(session.input, b.input); assert.equal(a.sent.length, 0); session.close();
       await assert.rejects(policy.open({ select: async () => ({ input: b.input.id, output: a.output.id }) }), /pairAmbiguous/);
       assert.equal(a.sent.length, 0, "same-input retarget fails before sending");
+    }
+    for (const missing of ["input", "output", "both"]) {
+      const selected = device("USB-MIDI", "selected"), other = device("Felucca", "other");
+      const access = { inputs: new Map([[selected.input.id, selected.input], [other.input.id, other.input]]),
+        outputs: new Map([[selected.output.id, selected.output], [other.output.id, other.output]]) };
+      if (missing !== "output") selected.input.state = "disconnected";
+      if (missing !== "input") selected.output.state = "disconnected";
+      const policy = d.discoveryFor(access, p);
+      await assert.rejects(policy.open({ preferred: selected.pair }), { message: "nodevice" },
+        `missing remembered ${missing} is transient absence, not cancellation`);
+      assert.equal(selected.sent.length + other.sent.length, 0, "missing preferred endpoints never fall back or probe another pair");
+      assert.equal(other.input.opens + other.output.opens, 0);
+      const abort = new AbortController(); abort.abort();
+      await assert.rejects(policy.open({ preferred: selected.pair, signal: abort.signal }), { message: "closed" },
+        "explicit cancellation remains closed even when the preferred endpoint is absent");
+      selected.input.state = selected.output.state = "connected";
+      const session = await policy.open({ preferred: selected.pair });
+      assert.equal(session.input, selected.input); assert.equal(session.output, selected.output);
+      assert.equal(other.sent.length, 0, "late reappearance requalifies the remembered pair only");
+      session.close();
     }
     {
       const a = device("Felucca", "dead"), b = device("Felucca", "live");
@@ -197,7 +220,8 @@ export async function runDiscoveryChecks(mode) {
       assert.equal(invalid.closed, true); assert.equal(bad.input.onmidimessage, null);
     } else {
       // Invoke the actual retained connect/disconnect call sites, with only rendering/load isolated.
-      const html = readFileSync(new URL("editor.html", import.meta.url), "utf8"), m = device("USB-MIDI");
+      const html = readFileSync(new URL("editor.html", import.meta.url), "utf8"), m = device("USB-MIDI"), other = device("Felucca", "other");
+      m.access.inputs.set(other.input.id, other.input); m.access.outputs.set(other.output.id, other.output);
       const begin = html.indexOf("let connecting = false;"), end = html.indexOf("\nfunction assertSession(", begin);
       const context = { ACCESS: m.access, PAIR: m.pair, console, setTimeout, clearTimeout, setInterval, clearInterval,
         AbortController, navigator: { requestMIDIAccess() { throw Error("unexpected permission request"); } } };
@@ -209,10 +233,25 @@ export async function runDiscoveryChecks(mode) {
         const samplesLeave=()=>{},resetBusy=()=>{},resetSets=()=>{},renderPanels=()=>{},renderMixer=()=>{},renderSysinfo=()=>{},renderLive=()=>{},renderLib=()=>{},renderBank=()=>{},renderPreferences=()=>{};
         midiPortPicker=async()=>PAIR;
         async function load(d){ if(!d.info || !d.session) throw Error('qualification not adopted'); }
-        ` + html.slice(begin, end) + ";({connect,disconnect,onState,get dev(){return dev},get button(){return button}})", context);
+        ` + html.slice(begin, end) + ";({connect,disconnect,onState,get dev(){return dev},get wantConnected(){return wantConnected},get button(){return button}})", context);
       await actual.connect();
       assert.equal(actual.dev.input, m.input); assert.equal(actual.dev.info.gcount, 27);
       assert.equal(m.sent.filter((r) => r.cmd === p.CMD.INFO).length, 1);
+      for (const late of ["input", "output"]) {
+        m.input.state = m.output.state = "disconnected";
+        actual.onState({ port: m.input }); actual.onState({ port: m.output });
+        const first = late === "input" ? "output" : "input";
+        m[first].state = "connected"; actual.onState({ port: m[first] });
+        await sleep(900);
+        assert.equal(actual.dev, null);
+        assert.equal(actual.wantConnected, true, "actual retained connect catch preserves reconnect intent for a missing endpoint");
+        assert.equal(other.sent.length, 0);
+        m[late].state = "connected"; actual.onState({ port: m[late] });
+        await sleep(900);
+        assert.equal(actual.dev?.input, m.input, "late remembered peer reconnects through actual retained onState/connect");
+        assert.equal(actual.dev?.output, m.output);
+        assert.equal(other.sent.length, 0);
+      }
       actual.disconnect(); await sleep(0);
       assert.equal(actual.dev, null); assert.equal(m.input.onmidimessage, null); assert.equal(m.input.closes, 1);
     }

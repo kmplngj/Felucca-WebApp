@@ -14,17 +14,21 @@ def main():
     if source["imports"]:
         raise SystemExit("discovery policy must use its injected protocol, without imports")
     path = ROOT / "editor.html"
-    text = path.read_text()
+    with path.open(encoding="utf-8", newline="") as stream:
+        text = stream.read()
     if text.count(BEGIN) != 1 or text.count(END) != 1:
         raise SystemExit("retained editor needs one discovery block")
     before, rest = text.split(BEGIN)
     _, after = rest.split(END)
-    expected = before + BEGIN + "\n" + source["body"].strip() + "\n" + END + after
+    newline = "\r\n" if rest.startswith("\r\n") else "\n"
+    body = source["body"].strip().replace("\n", newline)
+    expected = before + BEGIN + newline + body + newline + END + after
     if "--check" in sys.argv:
         if expected != text:
             raise SystemExit("retained discovery is stale: run python3 gen_discovery.py")
     else:
-        path.write_text(expected)
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            stream.write(expected)
 
 
 if __name__ == "__main__":

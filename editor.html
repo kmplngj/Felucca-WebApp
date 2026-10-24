@@ -2621,7 +2621,8 @@ class MidiDiscovery {
       let last;
       for (const pair of pairs) {
         const input = inputs.find((p) => p.id === pair.input), output = outputs.find((p) => p.id === pair.output);
-        if (!input || !output || abort.signal.aborted) throw midiError("closed");
+        if (abort.signal.aborted) throw midiError("closed");
+        if (!input || !output) throw midiError("nodevice");
         if (this.targets.has(input.id) && this.targets.get(input.id) !== output.id) throw midiError("pairAmbiguous");
         this.targets.set(input.id, output.id);
         onPair?.({ input: input.id, output: output.id });
