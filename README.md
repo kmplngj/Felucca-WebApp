@@ -27,7 +27,8 @@ node test_legacy.mjs        # stored-object export (STORE_LIST / STORE_GET) and 
 Checks that compare with the firmware use files from a Felucca checkout, passed in by environment variables:
 `FELUCCA_DESC` (the parameter tables, `desc.json`), `FELUCCA_TOOLS` (its `tools/`), `FELUCCA_ROOT` (a firmware
 build), `FELUCCA_PALETTES` (`tools/gen_ui_palettes.py`), `FELUCCA_INTERTIGHT`
-(`assets/fonts/InterTight[wght].ttf`), and `FELUCCA_FIRMWARE` (the firmware checkout root, for icon comparisons; the older `src/` + `tools/` layout is also accepted).
+(`assets/fonts/InterTight[wght].ttf`, or the identical retained source at `docs/manual/fonts/InterTight[wght].ttf`),
+and `FELUCCA_FIRMWARE` (the firmware checkout root, for icon comparisons; the older `src/` + `tools/` layout is also accepted).
 Without them those checks are skipped.
 
 `FELUCCA_ROOT=/path/to/Felucca node test_catalog.mjs` also compiles the firmware's actual `tests/engid_test.c`
@@ -97,6 +98,14 @@ synthetic packages/devices. The retained editor mocks use the
 firmware's explicit `descdump --legacy-web-mock` scope for engine IDs 0..13. Native comparisons keep their
 firmware-produced expected data; the runner never rewrites client tables or goldens.
 Native fixture builds use the firmware test runner's host flags, including `-O1`.
+The runner finds the existing Inter Tight generator source at `assets/fonts/` first, then `docs/manual/fonts/`
+after its relocation out of native firmware assets. `FELUCCA_INTERTIGHT=/absolute/path/to/InterTight[wght].ttf`
+overrides discovery and is preserved through the locked runner; a missing or wrong explicit source never falls
+back silently. The accepted original source has SHA-256
+`b81b73dcb64df3c230cabade7df6c5773bf863233f24c9ee51087519f1f88b6f` at both locations.
+The chosen path, hash and selection origin appear in `build/ci/summary.json` as `font_input`.
+Missing sources and hash mismatches fail before generation; `gen_fonts.py --check` still verifies the committed
+subset byte for byte. This input-path compatibility changes no fonts, styles or generated client assets.
 Firmware commands resolve their identity from the pinned firmware checkout, with the consumer PR's source
 identity variables removed from those subprocesses. The client job's provenance and step-summary context remain intact.
 
