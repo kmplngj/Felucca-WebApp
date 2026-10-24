@@ -94,11 +94,11 @@ def main(pkg, version, out, licences=None, try_dir=None, next_=False):
             raise SystemExit(f"index_pkg.html must contain {mark} once; update make_site.py")
     tokens = (HERE / "app" / "tokens.css").read_text(encoding="utf-8")   # the editor's colours (gen_tokens.py)
     html = html.replace("/*LIB*/", lib).replace("/*META*/", meta).replace("/*TOKENS*/", tokens)
-    credit = "drum voices and Fukiai icons (MIT)"        # (a package with the Sample Pack, 1.0.3.x: its credit too)
+    credit = " and Fukiai icons (MIT)"        # (a package with the Sample Pack, 1.0.3.x: its credit too)
     if html.count(credit) != 1:
         raise SystemExit("index_pkg.html: the credits line changed; update make_site.py")
     if sample_pack_in((lic_root / "LICENSING.md").read_text(encoding="utf-8")):
-        html = html.replace(credit, "drum voices, Sample Pack and Fukiai icons (MIT)")
+        html = html.replace(credit, ", the Hügelton Sample Pack generator and sounds (CC0 1.0) and Fukiai icons (MIT)")
     inst, ed, cl, fw = out / "webapp" / "installer", out / "webapp" / "editor", out / "webapp" / "editor-classic", out / "firmware"
     editor = bundle_page(HERE / "app" / "index.html")   # (before anything is written: a module the bundler refuses stops here)
     rel = '<meta name="felucca-release" content="">'
