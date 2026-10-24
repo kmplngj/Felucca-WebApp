@@ -30,6 +30,13 @@ build), `FELUCCA_PALETTES` (`tools/gen_ui_palettes.py`), `FELUCCA_INTERTIGHT`
 and `FELUCCA_FIRMWARE` (the firmware checkout root, for icon comparisons; the older `src/` + `tools/` layout is also accepted).
 Without them those checks are skipped.
 
+`gen_icons.py` derives parameter, waveform, MOD and legacy row icons from the firmware.
+Its `MENU_TAB_GLYPHS` input owns the five existing WebApp tab glyphs, independently of
+whether native tabs draw icons or text. Firmware tab names and any retained native icon
+table are validated; unknown, missing or duplicate tabs and missing font glyphs fail.
+This compatibility rule keeps the committed `app/src/paramicons.js` bytes unchanged.
+The causal generator fixtures run with the normal CI startup regressions.
+
 `FELUCCA_ROOT=/path/to/Felucca node test_catalog.mjs` also compiles the firmware's actual `tests/engid_test.c`
 harness with `CC` (default `cc`, optimized with `-O1`) to test real INFO, settings, favourite and unavailable-track
 replies. Build the firmware first so `build/gen/` exists. The fixtures include TEST14 and builds omitting DRUM,
