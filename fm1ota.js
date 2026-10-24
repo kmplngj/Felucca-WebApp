@@ -7,14 +7,16 @@
 // the loader reads the whole image and writes it. Both steps are "the device
 // asks, we answer": cmd 0x30 read requests on the logical image.
 
+import { OPEN_RE } from "./fm1pkg.js";
+
 const HS_QUERY = [0xF0, 0x00, 0x32, 0x45, 0x00, 0x00, 0x00, 0x40, 0x7F, 0xF7];
 const UPGRADE = [0xF0, 0x22, 0x24, 0x35, 0x7F, 0xF7];
 const MAXDATA = 512;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const IS_OTA = (id) => /^ota-/i.test(id.model);
 
-// errors carry a code the pages translate: notfound, model, stopped, noloader, lost, noreturn,
-// mismatch (detail: the identity the device reports), badreq
+// errors carry a code the pages translate: notfound, model, open, stopped, noloader, lost, noreturn,
+// mismatch (detail: the identity the device reports), badloader (detail: the loader's identity), badreq
 function fail(code, msg, detail = "") { const e = new Error(msg); e.code = code; e.detail = detail; return e; }
 
 export function pack7(data) {
@@ -61,8 +63,25 @@ function parseIdentity(pkt) {
   const d = unpack7(pkt.slice(1, -1));
   if (d.length !== 34 || d[0] !== 0 || d[1] !== 0x59 || d[2] !== 0x11) return null;
   const txt = String.fromCharCode(...d.slice(6, 33)).replace(/\0+$/, "");
-  const m = /^([^_]+)_(\d+)$/.exec(txt);
-  return m ? { text: txt, model: m[1], version: parseInt(m[2], 10) } : null;
+  const m = /^([^_]+)_([A-Z0-9._-]{1,15})$/.exec(txt);   // fm1_install.py parse_identity
+  return m ? { text: txt, model: m[1], version: /^\d+$/.test(m[2]) ? parseInt(m[2], 10) : m[2], open: OPEN_RE.test(txt) } : null;
+}
+
+// M-VAVE's FM1 Open firmware (FM-1_8nnnnnn looks like an FM-1 identity, but is not one we can update):
+// nothing is sent, the user returns it to the official firmware first (fm1_install.py refuse_open)
+export function refuseOpen(dev) {
+  if (!dev.id.open) return;
+  dev.link.close();
+  throw fail("open", `the FM-1 runs M-VAVE's FM1 Open firmware (${dev.id.text}): its updater takes only a package it was ` +
+    "armed for, which Felucca's installers do not do. Return it to the official V15 with the FM1 Open updater first, " +
+    "then install this. Nothing was sent", dev.id.text);
+}
+
+// the update loader the package needs (a stock package: ota-FM-1_015); nothing is sent to another one
+function requireLoader(ota, loader) {
+  if (!loader || ota.id.text === loader) return;
+  ota.link.close();
+  throw fail("badloader", `incompatible update loader ${ota.id.text}: the package requires ${loader}; nothing was sent to the loader`, ota.id.text);
 }
 
 // one MIDI in/out pair with a SysEx queue
@@ -170,11 +189,13 @@ export class Updater {
     }
   }
 
-  // full install: running firmware -> loader -> new firmware
-  async install(image, product, onStep) {
+  // full install: running firmware -> loader -> new firmware; loader: the identity the staged update
+  // loader must answer with (null: any of the model)
+  async install(image, product, onStep, loader = null) {
     const step = onStep || (() => {});
     const dev = await this.find((id) => !IS_OTA(id));
     if (!dev) throw fail("notfound", "FM-1 not found (USB cable, and no other app using it?)");
+    refuseOpen(dev);
     const [model] = product.split("_");
     if (dev.id.model !== model) { dev.link.close(); throw fail("model", `the device is ${dev.id.text}, the package is for ${product}`); }
     step("start", dev.id.text);
@@ -187,6 +208,7 @@ export class Updater {
     await sleep(3000);
     const ota = await this.waitFor((id) => id.model === "ota-" + model, 30000);
     if (!ota) throw fail("noloader", "the update loader did not appear. Replug the USB cable and press Install again: the device stays in update mode until it is finished.");
+    requireLoader(ota, loader);
     const s2 = await this.write(ota, image, step);
     if (!s2.finished) throw fail(s2.lost ? "lost" : "stopped", `the loader ${s2.lost ? "was disconnected" : "stopped"} after ${s2.served} requests. Replug and press Install again to resume.`);
     step("reboot");
@@ -209,10 +231,11 @@ export class Updater {
   }
 
   // resume: the device is already in update mode (loader) -> true when the write finished
-  async resume(image, onStep, product = null) {
+  async resume(image, onStep, product = null, loader = null) {
     const model = product && product.split("_")[0];
     const ota = await this.find((id) => model ? id.model === "ota-" + model : IS_OTA(id));
     if (!ota) return false;
+    requireLoader(ota, loader);
     const step = onStep || (() => {});
     const result = await this.write(ota, image, step);
     if (!result.finished) return false;

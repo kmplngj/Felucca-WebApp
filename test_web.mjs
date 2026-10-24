@@ -9,14 +9,17 @@
 //   and the user-sample pipeline byte for byte against felucca/tools/sampleio.py
 // - fm1pkg.js: buildFeluccaPackage == tools/fm1fw.py patch (build/felucca/FELUCCA.fwsc),
 //   logicalImage == the Python fwsc_logical (skipped without a build / an official package)
-// - fm1ota.js: a full install and an unplug during the write against a simulated FM-1
+// - fm1pkg.js validateStockPackage: the return-to-stock pins == tools/fm1_install.py, its refusals, and the
+//   official V15 / V16 files when they are there
+// - fm1ota.js: a full install and an unplug during the write against a simulated FM-1, FM1 Open refused,
+//   the stock loader required
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
-import { buildFeluccaPackage, logicalImage, productOf } from "./fm1pkg.js";
+import { buildFeluccaPackage, logicalImage, productOf, validateStockPackage, OPEN_RE, STOCK_LOADER, STOCK_PINS } from "./fm1pkg.js";
 import { Updater, pack7, unpack7 } from "./fm1ota.js";
 
 let failed = 0;
@@ -27,10 +30,12 @@ const HERE = new URL(".", import.meta.url).pathname;
 /* what lives outside felucca/web, each overridable (a web-only checkout passes them, or the checks skip):
    FELUCCA_DESC  the firmware's parameter / protocol table (host/descdump.c -> build/host/desc.json)
    FELUCCA_TOOLS the firmware's tools (tools/fm1_sample_upload.py, the sample format's reference)
-   FELUCCA_ROOT  the firmware tree with FM-1_v15.fwsc and a felucca/build.py build (the package checks) */
+   FELUCCA_ROOT  the firmware tree with FM-1_v15.fwsc and a felucca/build.py build (the package checks)
+   FELUCCA_STOCK a folder with M-VAVE's FM-1_v15.fwsc / FM-1_v16.fwsc (the return-to-stock pins; default FELUCCA_ROOT) */
 const DESC = process.env.FELUCCA_DESC || join(HERE, "../../build/host/desc.json");
 const TOOLS = process.env.FELUCCA_TOOLS || join(HERE, "../tools");
 const FW_ROOT = process.env.FELUCCA_ROOT || join(HERE, "../..");
+const STOCK_DIR = process.env.FELUCCA_STOCK || FW_ROOT;
 
 /* ------------------------------------------------------------ editor protocol --- */
 const html = readFileSync(join(HERE, "editor.html"), "utf8");
@@ -2030,16 +2035,65 @@ sys.stdout.buffer.write(fm1_ota.fwsc_logical(open(sys.argv[1], "rb").read()))`, 
   ok(productOf(pkg) === "FM-1_900", "fm1pkg.js productOf");
 }
 
+/* ------------------------------------------- return to stock (Felucca #619) --- */
+/* a package as far as its identity goes: one marker byte after each of the first 20 blocks (0x7D = none) */
+const pkgNamed = (id, n = 20 * 0x30 + 64) => {
+  const raw = new Uint8Array(n).fill(0x55);
+  for (let i = 0; i < 20; i++) raw[i * 0x30 + 0x2F] = i < id.length ? (id.charCodeAt(i) + i + 1) & 0xFF : 0x7D;
+  return raw;
+};
+const refusal = (bytes) => validateStockPackage(bytes).then(() => null, (e) => e);
+
+async function stockPackages() {
+  const PY = join(TOOLS, "fm1_install.py");
+  if (existsSync(PY) && py(`import sys; sys.path.insert(0, sys.argv[1]); import fm1_install as I
+print(int(hasattr(I, "STOCK_SHA256")))`, TOOLS).toString().trim() === "1") {
+    const P = JSON.parse(py(`import sys, json; sys.path.insert(0, sys.argv[1]); import fm1_install as I
+print(json.dumps({"sha": I.STOCK_SHA256, "loader": I.LOADER_FAMILIES["stock"], "open": I.OPEN_RE.pattern,
+                  "mboot": I.MBOOT_PRODUCT, "stock": I.STOCK_RE.pattern}))`, TOOLS));
+    ok(Object.keys(P.sha).sort().join() === Object.keys(STOCK_PINS).sort().join()
+       && Object.entries(P.sha).every(([k, v]) => STOCK_PINS[k].sha256 === v) && P.loader === STOCK_LOADER,
+      "stock: pins (identities, SHA-256, loader) == fm1_install.py");
+    ok(OPEN_RE.source === `^(?:${P.open})$` && P.mboot === "FM-1_099" && P.stock === "FM-1_0\\d\\d",
+      "stock: FM1 Open / m-bootloader / FM-1_0NN rules == fm1_install.py");
+  } else console.log("stock pins vs fm1_install.py: skipped (needs FELUCCA_TOOLS with the #619 installer)");
+
+  const code = async (id) => { const e = await refusal(pkgNamed(id)); return e && `${e.code}:${e.detail}`; };
+  ok(await code("FM-1_099") === "stockMboot:FM-1_099", "stock: m-bootloader's installer (FM-1_099) refused with its reason");
+  ok(await code("FM-1_8123456") === "stockOpenPkg:FM-1_8123456" && await code("FM1_OFFICIAL_OPEN") === "stockOpenPkg:FM1_OFFICIAL_OPEN"
+     && await code("FM1_COMMUNITY_12") === "stockOpenPkg:FM1_COMMUNITY_12", "stock: FM1 Open packages (FM-1_8nnnnnn, FM1_*) refused");
+  ok(await code("FM-1_017") === "stockUnpinned:FM-1_017" && await code("FM-1_014") === "stockUnpinned:FM-1_014",
+    "stock: an unpinned FM-1_0NN refused");
+  ok(await code("FM-1_015") === "stockUnpinned:FM-1_015"
+     && (await refusal(pkgNamed("FM-1_016", STOCK_PINS["FM-1_016"].size)))?.code === "stockUnpinned",
+    "stock: a pinned identity with other bytes (even the pinned size) refused");
+  ok(await code("FM-1_900") === "stockNotOfficial:" && await code("FM-1_8123") === "stockNotOfficial:",
+    "stock: a Felucca or other package is not official firmware");
+
+  for (const [product, file] of [["FM-1_015", "FM-1_v15.fwsc"], ["FM-1_016", "FM-1_v16.fwsc"]]) {
+    const path = join(STOCK_DIR, file);
+    if (!existsSync(path)) { console.log(`stock: ${file}: skipped (not in FELUCCA_STOCK)`); continue; }
+    const raw = new Uint8Array(readFileSync(path));
+    const v = await validateStockPackage(raw).catch((e) => e);
+    ok(v.product === product && v.version === STOCK_PINS[product].version && v.loader === "ota-FM-1_015"
+       && eq(v.image, logicalImage(raw)), `stock: the official ${file} accepted (${v.version || v.message})`);
+    const bent = raw.slice(); bent[raw.length - 1] ^= 1;
+    ok((await refusal(bent))?.code === "stockUnpinned" && (await refusal(raw.slice(0, -1)))?.code === "stockUnpinned",
+      `stock: ${file} with one byte changed or cut refused`);
+  }
+}
+
 /* ------------------------------------------------- update protocol (fm1ota.js) --- */
 const HS = [0xF0, 0x00, 0x32, 0x45, 0x00, 0x00, 0x00, 0x40, 0x7F, 0xF7];
 const UPGRADE = [0xF0, 0x22, 0x24, 0x35, 0x7F, 0xF7];
 
 /* an FM-1 on WebMIDI: identity, then "device asks, host answers" reads of the image */
 class FakeFM1 {
-  constructor(image, { unplugAfter = Infinity } = {}) {
+  constructor(image, { unplugAfter = Infinity, identity = "FM-1_015", loader = "ota-FM-1_900", after = "FM-1_900" } = {}) {
     this.image = image; this.unplugAfter = unplugAfter; this.served = 0; this.bad = 0;
+    this.loaderId = loader; this.after = after; this.upgrades = [];   /* the identities an UPGRADE reached */
     this.access = { inputs: new Map(), outputs: new Map() };
-    this.boot("FM-1_015", "FM-1");
+    this.boot(identity, "FM-1");
   }
   boot(identity, name) {
     this.identity = identity; this.waiting = null; this.queue = [];
@@ -2060,6 +2114,7 @@ class FakeFM1 {
       const body = [0, 0x59, 0x11, 0, 0, 0, ...t, ...new Array(28 - t.length).fill(0)];
       this.tx([0xF0, ...pack7(body), 0xF7]);
     } else if (eq(d, UPGRADE)) {
+      this.upgrades.push(this.identity);
       this.queue = this.identity.startsWith("ota-")
         ? [...Array.from({ length: 6 }, (_, k) => [k * 512, 512]), [0xF0000000, 8]]
         : [[0, 64], [0x40, 160], [0x1000, 512], [0xE0000000, 8]];
@@ -2073,8 +2128,8 @@ class FakeFM1 {
       this.waiting = null;
       this.served++;
       if (this.served >= this.unplugAfter) { this.input.state = this.output.state = "disconnected"; return; }
-      if (addr === 0xE0000000) setTimeout(() => this.boot("ota-FM-1_900", "Felucca Update"), 300);
-      else if (addr === 0xF0000000) setTimeout(() => this.boot("FM-1_900", "Felucca"), 300);
+      if (addr === 0xE0000000) setTimeout(() => this.boot(this.loaderId, "Felucca Update"), 300);
+      else if (addr === 0xF0000000) setTimeout(() => this.boot(this.after, "Felucca"), 300);
       else this.next();
     }
   }
@@ -2110,6 +2165,32 @@ async function updater() {
   ok(e && e.code === "lost", "fm1ota.js: unplugged in step 1 -> error code 'lost'");
   const e2 = await new Updater({ inputs: new Map(), outputs: new Map() }).install(image, "FM-1_900").then(() => null, (x) => x);
   ok(e2 && e2.code === "notfound", "fm1ota.js: no device -> error code 'notfound'");
+
+  /* #619: M-VAVE's FM1 Open firmware is refused before any update, whatever the package */
+  for (const id of ["FM-1_8123456", "FM1_OFFICIAL_OPEN", "FM1_COMMUNITY_7"]) {
+    const d = new FakeFM1(image, { identity: id });
+    const x = await new Updater(d.access).install(image, "FM-1_016", null, STOCK_LOADER).then(() => null, (y) => y);
+    ok(x && x.code === "open" && x.detail === id && d.upgrades.length === 0, `fm1ota.js: FM1 Open (${id}) refused, nothing sent`);
+  }
+  {
+    const d = new FakeFM1(image, { identity: "FM-1_8123456" });
+    const id = await new Updater(d.access).find((i) => i.model === "FM-1" || i.open);
+    id.link.close();
+    ok(id.id.open && id.id.model === "FM-1" && id.id.version === 8123456, "fm1ota.js: FM-1_8nnnnnn parses as an FM-1 marked open");
+  }
+  /* a return to stock: the staged loader must be the official one (ota-FM-1_015) */
+  const d4 = new FakeFM1(image, { identity: "FM-1_900", loader: "ota-FM-1_015", after: "FM-1_016" });
+  const got4 = await new Updater(d4.access).install(image, "FM-1_016", null, STOCK_LOADER).catch((y) => y);
+  ok(got4 === "FM-1_016" && d4.bad === 0 && d4.upgrades.join() === "FM-1_900,ota-FM-1_015",
+    "fm1ota.js: return to V16 through the official loader (ota-FM-1_015)");
+  const d5 = new FakeFM1(image, { identity: "FM-1_900", loader: "ota-FM-1_900", after: "FM-1_016" });
+  const e5 = await new Updater(d5.access).install(image, "FM-1_016", null, STOCK_LOADER).then(() => null, (y) => y);
+  ok(e5 && e5.code === "badloader" && e5.detail === "ota-FM-1_900" && d5.upgrades.join() === "FM-1_900",
+    "fm1ota.js: another loader after staging -> 'badloader', nothing sent to it");
+  const d6 = new FakeFM1(image);
+  d6.boot("ota-FM-1_900", "Felucca Update");
+  const e6 = await new Updater(d6.access).resume(image, null, "FM-1_015", STOCK_LOADER).then(() => null, (y) => y);
+  ok(e6 && e6.code === "badloader" && d6.upgrades.length === 0, "fm1ota.js: resuming stock on another loader -> 'badloader', nothing sent");
 }
 
 await editorMock();
@@ -2136,6 +2217,7 @@ editorTabs();
 editorIcons();
 samplesMatch();
 await packages();
+await stockPackages();
 await updater();
 console.log(failed ? `WEB TESTS FAILED (${failed})` : "web tests passed");
 process.exit(failed ? 1 : 0);

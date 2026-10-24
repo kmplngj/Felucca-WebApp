@@ -697,6 +697,19 @@ const until = async (cond, ms = 2000) => { const t = Date.now(); while (!cond() 
   const ids = ["lang", "go", "stock-file", "stock-go", "stock-recovery", "bar", "status", "log"];
   ok(ids.every((id) => pkgHtml.includes(`id="${id}"`)) && !/#[0-9a-f]{3,6}\b/i.test(pkgHtml.slice(pkgHtml.indexOf("<style>"), pkgHtml.indexOf("</style>"))),
     "site: the installer keeps every element its script uses; no colour outside the tokens");
+  {
+    /* every error code fm1pkg.js / fm1ota.js throw has its words in both languages, an identity (%s) in both or neither */
+    const src = pkgHtml.slice(pkgHtml.indexOf("const TEXT = {") + 13, pkgHtml.indexOf("};\nlet lang") + 1);
+    const TX = vm.runInNewContext(`(${src})`);
+    const codes = ["fm1pkg.js", "fm1ota.js"].flatMap((f) => [...readFileSync(join(HERE, f), "utf8").matchAll(/(?:refuse|fail)\("(\w+)"/g)].map((m) => m[1]));
+    const words = (k) => TX.en[k] && TX.ja[k] && TX.en[k].includes("%s") === TX.ja[k].includes("%s");
+    ok(Object.keys(TX.en).sort().join() === Object.keys(TX.ja).sort().join()
+       && ["open", "badloader", "stockOpenPkg", "stockMboot", "stockUnpinned", "stockNotOfficial", "stockLayout"].every((k) => codes.includes(k))
+       && codes.filter((k) => k !== "badreq").every(words) && ["stockValid", "stockOther"].every(words),
+      "site: the installer words every package / update refusal (FM1 Open, m-bootloader, unpinned) in ja and en");
+    ok(!/^import /m.test(inst) && inst.includes("FM-1_016") && inst.includes("function refuseOpen"),
+      "site: the installer inlines the stock pins and the FM1 Open refusal (no module import left)");
+  }
   ok(existsSync(join(s1, "firmware/felucca-1.0.3.fwsc")) && readFileSync(join(s1, "firmware/LICENSING.md"), "utf8") === "# fw\n"
      && readdirSync(join(s1, "firmware/LICENSES")).sort().join() === "Apache-2.0.txt,MIT-X.txt,index.html",
     "site: the package with the firmware's LICENSE, LICENSING.md, LICENSES/ (not the web app's)");
