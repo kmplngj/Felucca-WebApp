@@ -18,6 +18,7 @@ import { join } from "node:path";
 import vm from "node:vm";
 import { buildFeluccaPackage, logicalImage, productOf } from "./fm1pkg.js";
 import { Updater, pack7, unpack7 } from "./fm1ota.js";
+import { runDiscoveryChecks } from "./test_discovery.mjs";
 
 let failed = 0;
 const ok = (cond, what) => { console.log(`${what.padEnd(64)} ${cond ? "ok" : "FAIL"}`); if (!cond) failed++; };
@@ -37,6 +38,7 @@ const html = readFileSync(join(HERE, "editor.html"), "utf8");
 /* FELUCCA_PROTO=app: the protocol checks run against the new editor's module (app/src/proto.js, the same section
    moved out; its export list dropped) instead of editor.html */
 const PROTO_APP = process.env.FELUCCA_PROTO === "app";
+if (!PROTO_APP) await runDiscoveryChecks("classic");
 const protoSrc = PROTO_APP ? readFileSync(join(HERE, "app/src/proto.js"), "utf8") : html;
 const proto = protoSrc.slice(protoSrc.indexOf("/*PROTO-BEGIN*/"), protoSrc.indexOf("/*PROTO-END*/"));
 if (PROTO_APP) console.log("protocol section: app/src/proto.js");
@@ -1530,7 +1532,7 @@ async function editorSetGate() {
   };
   const line = (head) => fn(head, "\n");
   const state = html.slice(html.indexOf("let busy = 0;"), html.indexOf("/* parameter ids (felucca/src/core.h)"));
-  const code = [state, line("const P = { LEVEL: 0, SLEN: 29 };"), line("const key = "), line("const pSlen = "), line("const gEng = "),
+  const code = [state, line("let connecting = false;"), line("let connectionEpoch = "), line("const P = { LEVEL: 0, SLEN: 29 };"), line("const key = "), line("const pSlen = "), line("const gEng = "),
     line("const hasTracks = "), fn("function assertSession("), fn("async function sessionRequest("), line("const rq = "),
     fn("async function getDump("), fn("function showValue("), fn("function touched("), fn("function userSet("),
     fn("async function sendSet("), fn("function selectTrack("), fn("async function afterSoundChange("), fn("function refreshAll("),
@@ -1830,7 +1832,9 @@ ${code}
 async function editorSessions() {
   const state = html.slice(html.indexOf("let busy = 0;"), html.indexOf("let dragging", html.indexOf("let busy = 0;")));
   const requests = html.slice(html.indexOf("function assertSession(d)"), html.indexOf("/* the whole connect sequence */"));
-  const loading = html.slice(html.indexOf("async function load(d)"), html.indexOf("async function getDescOrNull"));
+  const loadStart = html.indexOf("async function load(d)"), loadEnd = html.indexOf("async function rereadEngineDesc", loadStart);
+  if (loadStart < 0 || loadEnd <= loadStart) throw new Error("retained load() test boundaries missing");
+  const loading = html.slice(loadStart, loadEnd);
   const library = html.slice(html.indexOf("async function libOp(fn)"), html.indexOf("const checkRc", html.indexOf("async function libOp(fn)")));
   let shown = 0, adopted, adoptStarted, setResets = 0;
   const nodes = new Map();

@@ -8,6 +8,9 @@ import { store } from "./dom.js";
 
 const TEXT = {
   en: {
+    selectPorts: "Select MIDI ports", midiInput: "MIDI input", midiOutput: "MIDI output",
+    portHelp: "Choose the input and output of the same FM-1. If identical names are unclear, unplug other devices first. Only a read-only compatibility check is sent before loading.",
+    protocol: "Incompatible editor reply", pairAmbiguous: "Reconnect the device before changing this input's output.", portBusy: "MIDI port is still closing. Reconnect the device and try again.",
     connect: "Connect", disconnect: "Disconnect", connecting: "Connecting", nomidi: "No MIDI in this browser",
     denied: "MIDI access denied", nodevice: "No Felucca found", noreply: "No reply", lost: "Device lost",
     disconnected: "Disconnected", ready: "Ready", reading: "Reading", steps: "Steps", error: "Error",
@@ -51,6 +54,9 @@ const TEXT = {
     rawEmpty: "EMPTY", rawCurrent: "CURRENT", rawLegacy: "LEGACY", rawUnknown: "UNKNOWN", rawDamaged: "DAMAGED",
   },
   ja: {
+    selectPorts: "MIDI ポートを選択", midiInput: "MIDI 入力", midiOutput: "MIDI 出力",
+    portHelp: "同じ FM-1 の入力と出力を選んでください。同名で区別できない場合は、ほかの機器を外してください。読み込み前は互換性の確認のみを行います。",
+    protocol: "エディター応答に互換性がありません", pairAmbiguous: "この入力の出力を変更する前に機器を接続し直してください。", portBusy: "MIDI ポートを終了中です。機器を接続し直してください。",
     connect: "接続", disconnect: "切断", connecting: "接続中", nomidi: "このブラウザは MIDI に未対応",
     denied: "MIDI が許可されていません", nodevice: "Felucca が見つかりません", noreply: "応答なし", lost: "接続が切れました",
     disconnected: "切断しました", ready: "準備完了", reading: "読み込み中", steps: "ステップ", error: "エラー",

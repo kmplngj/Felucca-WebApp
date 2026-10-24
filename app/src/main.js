@@ -20,6 +20,7 @@ import { cells } from "./parts.js";
 import { applyEditorPrefs, settingsScreen } from "./settings.js";
 import { t } from "./text.js";
 import { advice } from "./version.js";
+import { midiPortPicker, midiPortState } from "./discovery.js";
 
 const QS = new URLSearchParams(location.search);
 const MOCK = QS.get("mock") === "1";
@@ -27,6 +28,8 @@ const PLACES = [["sound", "waveform_variant"], ["seq", "symbol_grid"], ["mix", "
 const PLACE_KEY = "felucca-editor-place";
 
 let access = null, dev = null, wantConnected = false, connecting = false;
+let connectionEpoch = 0, connectionAbort = null, rememberedPair = null, reconnectTimer;
+const portStates = new WeakMap();
 let place = PLACES.some(([p]) => p === store.get(PLACE_KEY)) ? store.get(PLACE_KEY) : "sound", inSettings = false;
 
 /* ---- messages: the log, and its last line at the right of the help bar ---- */
@@ -163,7 +166,7 @@ function relabel() {
   $("#installer").setAttribute("aria-label", t("installer"));
   $("#rail").setAttribute("aria-label", t("sound") + " · " + t("seq"));
   $("#tracks").setAttribute("aria-label", t("tracks"));
-  $("#connect").lastElementChild.textContent = t(dev ? "disconnect" : "connect");
+  $("#connect").lastElementChild.textContent = t(connecting ? "cancel" : dev ? "disconnect" : "connect");
   if (!$("#update").hidden) $("#update-t").textContent = `${t("update").toUpperCase()} v${$('meta[name="felucca-release"]').content}`;
   if (messages.length && !connecting) $("#msg-t").textContent = said(messages[0]);   /* (a key's message in the new language) */
   if ($("#log").open) drawLog();
@@ -215,23 +218,39 @@ function offer(d) {
 $("#of-go").onclick = () => $("#oldfw").close();
 
 /* ---- the connection ---- */
-async function connect() {
+async function connect(reconnect = false) {
   if (connecting || dev) return;
   connecting = true; wantConnected = true;
-  $("#connect").disabled = true;
+  const epoch = ++connectionEpoch;
+  const abort = new AbortController(); connectionAbort = abort;
+  let attempt;
+  relabel();
   try {
     if (!access) {
-      if (MOCK) access = makeMockDevice({ legacy: QS.get("legacy") === "1", catalog: QS.get("catalog") === "1" || QS.get("raw") === "1", test14: QS.get("test14") === "1", omit: QS.has("omit") ? Number(QS.get("omit")) : undefined,
+      let granted;
+      if (MOCK) granted = makeMockDevice({ legacy: QS.get("legacy") === "1", catalog: QS.get("catalog") === "1" || QS.get("raw") === "1", test14: QS.get("test14") === "1", omit: QS.has("omit") ? Number(QS.get("omit")) : undefined,
         rawStore: QS.get("raw") === "1" }).access;   /* (&raw=1: the raw store export of #456, with demo legacy objects) */
       else if (!navigator.requestMIDIAccess) { sayK("nomidi"); return; }
-      else { try { access = await navigator.requestMIDIAccess({ sysex: true }); } catch { sayK("denied"); return; } }
-      access.onstatechange = onPortState;
+      else {
+        try { granted = await navigator.requestMIDIAccess({ sysex: true }); }
+        catch { if (epoch === connectionEpoch && !abort.signal.aborted) sayK("denied"); return; }
+      }
+      if (epoch !== connectionEpoch || abort.signal.aborted) return;
+      access = granted;
+      for (const port of [...access.inputs.values(), ...access.outputs.values()]) portStates.set(port, port.state);
     }
+    if (epoch !== connectionEpoch || abort.signal.aborted) return;
+    access.onstatechange = onPortState;
     sayK("connecting");
-    const d = new Device(access, { hidden: () => document.hidden });
+    const d = new Device(access, { hidden: () => document.hidden, preferred: reconnect ? rememberedPair : null,
+      selectPorts: (ports, signal) => midiPortPicker(ports, signal, Object.fromEntries(
+        ["selectPorts", "portHelp", "midiInput", "midiOutput", "cancel", "connect"].map((key) => [key, t(key)]))) });
+    attempt = d;
+    abort.signal.addEventListener("abort", () => d.close(), { once: true });
     dev = d;
+    d.on("ports", (pair) => { if (dev === d) rememberedPair = pair; });
     relabel();
-    d.on("progress", (p) => { if (p.what === "desc") $("#msg-t").textContent = `${t("reading")} ${p.n}/${p.total}`; else if (p.what === "steps") $("#msg-t").textContent = `${t("steps")} ${p.n}/${p.total}`; });
+    d.on("progress", (p) => { if (dev !== d) return; if (p.what === "desc") $("#msg-t").textContent = `${t("reading")} ${p.n}/${p.total}`; else if (p.what === "steps") $("#msg-t").textContent = `${t("steps")} ${p.n}/${p.total}`; });
     d.on("param", (p) => { sound.param(p.scope, p.id, p.value); seq.param(p.scope, p.id, p.value); settings.param(p.scope, p.id, p.value); });
     const settle = () => { $("#msg-t").textContent = messages.length ? said(messages[0]) : ""; };   /* (the progress line goes) */
     d.on("reload", () => { sound.show(d); seq.show(d); mix.show(d); library.refresh(); samples.refresh(); project.refresh(); settings.show(d); drawTracks(); drawStore(); drawState(); settle(); });
@@ -253,36 +272,48 @@ async function connect() {
     d.on("palette", () => { if (d.loaded) settings.show(d); });                  /* (1.6: CUSTOM palette read as settings open) */
     d.on("closed", (reason) => {
       if (dev !== d) return;
-      dev = null; $("#update").hidden = true; renderAll(); relabel(); sayK(reason);
+      dev = null; $("#update").hidden = true; renderAll(); relabel();
+      if (!connecting || reason !== "disconnected") sayK(reason);
       /* USB SERIAL switched: the device leaves the bus and comes back (a port event connects again; else this) */
-      if (reason === "usb") setTimeout(() => { if (!dev && wantConnected && !connecting) connect(); }, 2500);
+      if (reason === "usb") reconnectTimer = setTimeout(() => { if (!dev && wantConnected && !connecting) connect(true); }, 2500);
     });
     await d.open();
-    if (dev !== d) return;
+    if (dev !== d || epoch !== connectionEpoch) return;
+    rememberedPair = { input: d.input.id, output: d.output.id };
     await lib.adopt(d);
+    if (dev !== d || epoch !== connectionEpoch) return;
     offer(d);
     renderAll();
     sayK("ready", d.info.version);
   } catch (e) {
+    if (epoch !== connectionEpoch) return;
+    if (e.message === "closed" && attempt?.closeReason !== "lost") wantConnected = false;
     const d = dev;
     if (d) { dev = null; d.close(e.message === "nodevice" ? "nodevice" : /^timeout/.test(e.message) ? "noreply" : "error"); }
-    else if (e.message === "nodevice") sayK("nodevice");
-    if (e.message !== "nodevice" && !/^timeout/.test(e.message)) console.error(e);
+    const reason = e.message === "closed" && attempt?.closeReason === "lost" ? "lost" : e.message;
+    sayK(["nodevice", "protocol", "pairAmbiguous", "portBusy", "selectPorts", "lost"].includes(reason) ? reason :
+      e.message === "closed" ? "disconnected" : "noreply");
   } finally {
-    connecting = false;
-    $("#connect").disabled = false;
-    relabel();
+    if (epoch === connectionEpoch) { connecting = false; connectionAbort = null; relabel(); }
   }
 }
-function disconnect(reason = "disconnected") { wantConnected = false; if (dev) dev.close(reason); }
-$("#connect").onclick = () => (dev ? disconnect() : connect());
+function disconnect(reason = "disconnected") {
+  wantConnected = false; ++connectionEpoch; clearTimeout(reconnectTimer);
+  const d = dev; dev = null; connectionAbort?.abort(); connectionAbort = null;
+  d?.close(reason); connecting = false; renderAll(); relabel(); sayK(reason);
+}
+$("#connect").onclick = () => (connecting || dev ? disconnect() : connect());
 function onPortState(e) {
   const p = e.port;
-  if (!p || !/felucca/i.test(p.name || "")) return;
+  if (!p) return;
+  const previous = portStates.get(p); portStates.set(p, p.state);
+  midiPortState(access, p);
+  if (previous === p.state) return;
   if (dev && p.state === "disconnected" && dev.input && (p.id === dev.input.id || p.id === dev.output.id)) dev.close("lost");
-  else if (!dev && wantConnected && p.state === "connected" && p.type === "output") {
-    clearTimeout(onPortState.tm);                    /* the device came back: connect again */
-    onPortState.tm = setTimeout(() => { if (!dev && wantConnected) connect(); }, 800);
+  else if (!dev && !connecting && wantConnected && p.state === "connected" && rememberedPair &&
+      [rememberedPair.input, rememberedPair.output].includes(p.id)) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => { if (!dev && wantConnected) connect(true); }, 800);
   }
 }
 /* MOTION is not pushed: read it while the sequence shows */

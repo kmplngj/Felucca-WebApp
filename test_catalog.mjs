@@ -9,12 +9,13 @@ import { join } from "node:path";
 import vm from "node:vm";
 import * as app from "./app/src/proto.js";
 import { Device } from "./app/src/device.js";
+import { validateMidiInfo, validateMidiDesc } from "./app/src/discovery.js";
 import { Library, memoryStore } from "./app/src/library.js";
 import { BACKUP_IDS, BACKUP_CMD, bkU32, bkR32, bkPack, bkUnpack, bkCrc, captureBackup, restoreBackup, readBackup, settingsFormat } from "./fm1backup.js";
 
 const html = readFileSync(new URL("./editor.html", import.meta.url), "utf8");
 const legacy = vm.runInNewContext(html.slice(html.indexOf("/*PROTO-BEGIN*/"), html.indexOf("/*PROTO-END*/")) +
-  ";({CMD,parse,req,engineAvailable,userEngine,catalogLabel,readDevicePreferences,devicePresetRows,readLibraryFile,libraryFile,capturePatch,bank})", { setTimeout, clearTimeout, setInterval, clearInterval, console });
+  ";({CMD,F,parse,req,engineAvailable,userEngine,catalogLabel,readDevicePreferences,devicePresetRows,readLibraryFile,libraryFile,capturePatch,bank})", { setTimeout, clearTimeout, setInterval, clearInterval, console });
 const eq = (a, b) => assert.deepEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)));
 const str = (s) => [...s].map((c) => c.charCodeAt(0)).concat(0);
 const names = ["ANALOG", "-", "PHASE", "LOFI", "SAMPLE", "VOICE", "TRIO", "WHEEL", "GRAIN", "PHYS", "DRUM", "-", "FM6", "SLICE", "TEST14"];
@@ -262,6 +263,13 @@ static void json_reply(uint32_t cmd,const uint8_t*a,uint32_t n) { uint32_t z=req
 int main(void) {
  static persist_rec_t r, r4, r2; uint8_t a[4]; reset(); panel=PANEL_DEFAULT;
  printf("{\"testEngine\":%u,\"info\":", (unsigned)ENGI_TEST); json_reply(ED_INFO,a,0);
+ a[0]=0;a[1]=0;printf(",\"baseDesc\":");json_reply(ED_DESC,a,2);
+ a[0]=1;printf(",\"tempoDesc\":");json_reply(ED_DESC,a,2);
+ printf(",\"descriptors\":["); uint32_t first=1;
+ for(uint32_t i=0;i<P_E0;i++){a[0]=0;a[1]=i;if(!first)putchar(',');first=0;json_reply(ED_DESC,a,2);}
+ for(uint32_t i=0;i<G_COUNT;i++){a[0]=1;a[1]=i;putchar(',');json_reply(ED_DESC,a,2);}
+ for(uint32_t e=0;e<64;e++){TSEL->eng_req=e;for(uint32_t i=P_E0;i<P_COUNT;i++){a[0]=0;a[1]=i;putchar(',');json_reply(ED_DESC,a,2);}}
+ TSEL->eng_req=0;putchar(']');
  printf(",\"per4\":"); settings_export_rec(&r); r4=r; json_bytes((const uint8_t*)&r,persist_len(&r));
  favorite_set(ENGI_TEST,1,1); settings_export_rec(&r); printf(",\"per6\":"); json_bytes((const uint8_t*)&r,persist_len(&r));
  memset(&favorites,0,sizeof favorites);uint32_t rc6=bk_put((const uint8_t*)&r,persist_len(&r));settings_export_rec(&r2);
@@ -287,7 +295,13 @@ int main(void) {
     assert.equal(settingsFormat({ objects: [{ id: 1, bytes: Uint8Array.from(f.per4) }] }), "PER4");
     assert.equal(settingsFormat({ objects: [{ id: 1, bytes: Uint8Array.from(f.per6) }] }), "PER6", "placeholder favourite actually exercises PER6");
     for (const E of [app, legacy]) {
-      const i = E.parse[E.CMD.INFO](f.info); assert.equal(E.userEngine(i), 127); assert.equal(i.backupExtraCaps, 0);
+      const i = validateMidiInfo(f.info, E);
+      assert.equal(validateMidiDesc(f.baseDesc,0,0,E).label,"LVL");
+      assert.equal(validateMidiDesc(f.tempoDesc,1,0,E).label,"BPM");
+      assert.equal(f.descriptors.length, i.pe0 + i.gcount + 64 * (i.pcount - i.pe0));
+      for (const wire of f.descriptors) validateMidiDesc(wire, wire[0], wire[1], E);
+      assert.ok(f.descriptors.some((wire) => validateMidiDesc(wire,wire[0],wire[1],E).label === "-"), "unused/unavailable engine descriptors remain valid");
+      assert.equal(E.userEngine(i), 127); assert.equal(i.backupExtraCaps, 0);
       assert.equal(i.engines[f.testEngine], "TEST14");
       assert.equal(E.engineAvailable(i, f.testEngine), true); if (omit >= 0) assert.equal(E.engineAvailable(i, omit), false);
       const dump = E.parse[E.CMD.DUMP](f.missing, i); assert.equal(dump.engine, 40); assert.equal(dump.preset, 101); eq(dump.p.slice(i.pe0), [-64,-63,-62,-61,-60,-59,-58,-57]);
@@ -303,7 +317,7 @@ int main(void) {
       eq(kept.grid,captured.grid);
       await roundtrip(Uint8Array.from(f.per4), i); await roundtrip(Uint8Array.from(f.per6), i);
     }
-    console.log(`native firmware: real INFO49+58, TEST14 id=${f.testEngine}, omit=${omit}, missing DUMP and PER4/PER6 (${f.per4.length}/${f.per6.length} bytes) native+JS round trips ok`);
+    console.log(`native firmware: real INFO49+58, TEST14 id=${f.testEngine}, omit=${omit}, ${f.descriptors.length} real DESC (all64 engine IDs), missing DUMP and PER4/PER6 (${f.per4.length}/${f.per6.length} bytes) native+JS round trips ok`);
   }
 } else console.log("native firmware: skipped (set FELUCCA_ROOT to a built firmware checkout)");
 console.log("catalog tests passed");
