@@ -63,6 +63,10 @@ def menu_icons(fw, glyph, cmap):
     if not (source_dir(fw) / "menu_items.c").exists():
         return {"rows": {}, "tabs": {}}
     items, menu = (source_dir(fw) / "menu_items.c").read_text(), (source_dir(fw) / "ui_menu.c").read_text()
+    # Comments can mention removed tables or contain obsolete declarations.
+    # Preserve quoted C literals while removing both comment forms.
+    menu = re.sub(r'''("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|/\*.*?\*/|//[^\n]*''',
+                  lambda match: match.group(1) or " ", menu, flags=re.S)
     def pairs(names_re, icons_re):
         n, i = re.search(names_re, items, re.S), re.search(icons_re, menu, re.S)
         if not n or not i:

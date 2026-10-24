@@ -48,6 +48,14 @@ class MenuIcons(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     self.read()
 
+    def test_native_table_mentions_in_comments_are_ignored(self):
+        expected = self.read()
+        self.menu.write_text('/* MTAB_ICON removed */\n// MTAB_ICON[MTAB_COUNT] = invalid;\nvoid draw_menu(void) {}')
+        self.assertEqual(self.read(), expected)
+        self.menu.write_text('/* MTAB_ICON[MTAB_COUNT] = {ICON_UNKNOWN}; */\n'
+                             'MTAB_ICON[MTAB_COUNT] = {ICON_0, ICON_1, ICON_2, ICON_3, ICON_4};')
+        self.assertEqual(self.read(), expected)
+
     def test_present_malformed_or_unknown_native_icons_are_not_ignored(self):
         for text in ('MTAB_ICON[MTAB_COUNT] = {ICON_0};',
                      'MTAB_ICON[MTAB_COUNT] = {ICON_0, ICON_1, ICON_2, ICON_3, ICON_UNKNOWN};',
