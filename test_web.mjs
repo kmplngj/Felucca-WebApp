@@ -611,11 +611,11 @@ async function editorFm4() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const js = (x) => JSON.stringify(x);
 /* a mock + Link pair; counts frames sent per cmd and timeouts reported */
-function attachMock(opt, linkOpt = {}) {
-  const m = E.makeMockDevice({ auto: false, ...opt });
+function attachMock(opt, linkOpt = {}, protocol = E) {
+  const m = protocol.makeMockDevice({ auto: false, ...opt });
   const inp = [...m.access.inputs.values()][0], out = [...m.access.outputs.values()][0];
   const sent = {}, ev = { timeouts: 0, unknown: [], pushes: [] };
-  const link = new E.Link((d) => { sent[d[4]] = (sent[d[4]] || 0) + 1; out.send(d); }, {
+  const link = new protocol.Link((d) => { sent[d[4]] = (sent[d[4]] || 0) + 1; out.send(d); }, {
     timeout: 300, onTimeout: () => ev.timeouts++, onUnknown: (f) => ev.unknown.push(f),
     onPush: (f) => ev.pushes.push({ ...f, pending: link.cur ? link.cur.cmd : 0 }), ...linkOpt });
   inp.onmidimessage = (e) => link.receive(e.data);
@@ -869,78 +869,105 @@ async function editorRatchet() {
 }
 
 async function editorLive() {
-  const C = E.CMD;
-  const { m, link, rq, sent, ev, done } = attachMock({ watchMs: 250 });
-  const info = E.parse[C.INFO](await rq(E.req.info()));
-  ok(await E.startWatch(rq), "live: WATCH on");
+  let now = 1000;
+  /* This VM alone owns the test clock. The shared protocol and host Date keep real time. */
+  const E = vm.runInNewContext(proto + ";({ CMD, parse, req, Link, startWatch, bank, makeMockDevice })", {
+    setTimeout, clearTimeout, setInterval, clearInterval, console,
+    Date: class extends Date { static now() { return now; } },
+  });
+  const sessions = [];
+  const attach = (opt) => {
+    const session = attachMock(opt, {}, E);
+    sessions.push(session);
+    return session;
+  };
+  try {
+    const C = E.CMD;
+    const { m, link, rq, sent, ev } = attach({ watchMs: 250 });
+    const info = E.parse[C.INFO](await rq(E.req.info()));
+    ok(await E.startWatch(rq), "live: WATCH on");
 
-  /* a push between a request and its reply */
-  const pend = rq(E.req.dump());
-  const kn = m.sim.knob(9, 4);
-  const dump = E.parse[C.DUMP](await pend, info);
-  const ch = ev.pushes.find((f) => f.cmd === C.CHANGED);
-  const cv = ch && E.parse[C.CHANGED](ch.a);
-  ok(dump.p.length === 111 && ch && ch.pending === C.DUMP && cv.scope === 0 && cv.id === 9 && cv.value === kn.value && !ev.unknown.length,
-    "live: CHANGED while DUMP waits -> push handler, reply still matched");
-  const rl = m.sim.reload();
-  m.sim.step(3);
-  const pend2 = rq(E.req.stepGet(7));
-  const s7 = E.parse[C.STEP_GET](await pend2);
-  await sleep(10);
-  const r = ev.pushes.find((f) => f.cmd === C.RELOAD), sc = ev.pushes.find((f) => f.cmd === C.STEP_CHANGED);
-  ok(s7.index === 7 && r && E.parse[C.RELOAD](r.a).preset === rl.preset && sc && E.parse[C.STEP_CHANGED](sc.a).index === 3,
-    "live: RELOAD and STEP_CHANGED routed");
-  const nr = ev.pushes.filter((f) => f.cmd === C.RELOAD).length;
-  await rq(E.req.preset(1, 2));
-  await rq(E.req.stepSet(9, { n: 1, notes: [62, 0, 0, 0], time: 0, flags: 0, vel: 90 }));
-  await sleep(10);
-  ok(info.syncCaps === 3 && ev.pushes.filter((f) => f.cmd === C.RELOAD).length === nr && !ev.pushes.some((f) => f.cmd === C.STEP_CHANGED && f.a[0] === 9),
-    "live: INFO 53 01 03, no RELOAD echo of an editor PRESET, nothing after its STEP_SET");
-  {
-    const o = attachMock({ watchMs: 250, noSync: true });
-    const oi = E.parse[C.INFO](await o.rq(E.req.info()));
-    await E.startWatch(o.rq);
-    await o.rq(E.req.preset(1, 2));
+    /* a push between a request and its reply */
+    const pend = rq(E.req.dump());
+    const kn = m.sim.knob(9, 4);
+    const dump = E.parse[C.DUMP](await pend, info);
+    const ch = ev.pushes.find((f) => f.cmd === C.CHANGED);
+    const cv = ch && E.parse[C.CHANGED](ch.a);
+    ok(dump.p.length === 111 && ch && ch.pending === C.DUMP && cv.scope === 0 && cv.id === 9 && cv.value === kn.value && !ev.unknown.length,
+      "live: CHANGED while DUMP waits -> push handler, reply still matched");
+    const rl = m.sim.reload();
+    m.sim.step(3);
+    const pend2 = rq(E.req.stepGet(7));
+    const s7 = E.parse[C.STEP_GET](await pend2);
     await sleep(10);
-    ok(oi.syncCaps === 0 && oi.fm6 && o.ev.pushes.filter((f) => f.cmd === C.RELOAD).length === 1,
-      "live: firmware before the sync tag echoes the editor's PRESET as RELOAD (the editor skips it)");
-    o.done();
-    const fw = E.parse[C.INFO]([88, 0, 0, 91, 27, 64, 83, 4, 16, 0x55, 1, 9, 0x4d, 1, 64, 1, 0x42, 1, 3, 0x46, 1, 8, 27, 0x53, 1, 3]);
-    ok(fw.backupCaps === 3 && fw.fm6 && fw.fm6.bank === 27 && !fw.fm6.caps && fw.syncCaps === 3,
-      "live: the INFO trailer of 1.0.2: backup, FM6 (a bank), then the sync tag; no FM6 v2");
-    const f3 = E.parse[C.INFO]([88, 0, 0, 91, 27, 64, 83, 4, 16, 0x55, 1, 9, 0x4d, 1, 64, 1, 0x42, 1, 3, 0x46, 1, 8, 0, 0x53, 1, 3, 0x50, 1, 3]);
-    ok(f3.fm6 && f3.fm6.bank === 0 && f3.fm6.caps === 3 && f3.syncCaps === 3, "live: the INFO trailer of 1.0.3: FM6 v2 after the sync tag (no bank, preset patches)");
+    const r = ev.pushes.find((f) => f.cmd === C.RELOAD), sc = ev.pushes.find((f) => f.cmd === C.STEP_CHANGED);
+    ok(s7.index === 7 && r && E.parse[C.RELOAD](r.a).preset === rl.preset && sc && E.parse[C.STEP_CHANGED](sc.a).index === 3,
+      "live: RELOAD and STEP_CHANGED routed");
+    const nr = ev.pushes.filter((f) => f.cmd === C.RELOAD).length;
+    await rq(E.req.preset(1, 2));
+    await rq(E.req.stepSet(9, { n: 1, notes: [62, 0, 0, 0], time: 0, flags: 0, vel: 90 }));
+    await sleep(10);
+    ok(info.syncCaps === 3 && ev.pushes.filter((f) => f.cmd === C.RELOAD).length === nr && !ev.pushes.some((f) => f.cmd === C.STEP_CHANGED && f.a[0] === 9),
+      "live: INFO 53 01 03, no RELOAD echo of an editor PRESET, nothing after its STEP_SET");
+    {
+      const o = attach({ watchMs: 250, noSync: true });
+      const oi = E.parse[C.INFO](await o.rq(E.req.info()));
+      await E.startWatch(o.rq);
+      await o.rq(E.req.preset(1, 2));
+      await sleep(10);
+      ok(oi.syncCaps === 0 && oi.fm6 && o.ev.pushes.filter((f) => f.cmd === C.RELOAD).length === 1,
+        "live: firmware before the sync tag echoes the editor's PRESET as RELOAD (the editor skips it)");
+      const fw = E.parse[C.INFO]([88, 0, 0, 91, 27, 64, 83, 4, 16, 0x55, 1, 9, 0x4d, 1, 64, 1, 0x42, 1, 3, 0x46, 1, 8, 27, 0x53, 1, 3]);
+      ok(fw.backupCaps === 3 && fw.fm6 && fw.fm6.bank === 27 && !fw.fm6.caps && fw.syncCaps === 3,
+        "live: the INFO trailer of 1.0.2: backup, FM6 (a bank), then the sync tag; no FM6 v2");
+      const f3 = E.parse[C.INFO]([88, 0, 0, 91, 27, 64, 83, 4, 16, 0x55, 1, 9, 0x4d, 1, 64, 1, 0x42, 1, 3, 0x46, 1, 8, 0, 0x53, 1, 3, 0x50, 1, 3]);
+      ok(f3.fm6 && f3.fm6.bank === 0 && f3.fm6.caps === 3 && f3.syncCaps === 3, "live: the INFO trailer of 1.0.3: FM6 v2 after the sync tag (no bank, preset patches)");
+    }
+
+    /* Only logical time advances WATCH expiry; real timers still deliver replies and pushes. */
+    for (let i = 0; i < 4; i++) { now += 249; await rq(E.req.ping()); }
+    let n0 = ev.pushes.length;
+    m.sim.knob();
+    await sleep(10);
+    ok(ev.pushes.length === n0 + 1, "live: PING keeps WATCH on");
+    now += 250;
+    n0 = ev.pushes.length;
+    m.sim.knob();
+    await sleep(10);
+    ok(ev.pushes.length === n0 + 1, "live: WATCH is still on at exactly 250 ms");
+    now += 1;
+    n0 = ev.pushes.length;
+    m.sim.knob();
+    await sleep(10);
+    ok(ev.pushes.length === n0, "live: WATCH ends by itself without requests (251 ms)");
+    const latePing = await rq(E.req.ping());
+    m.sim.knob();
+    await sleep(10);
+    ok(latePing.length === 1 && latePing[0] === 0 && ev.pushes.length === n0,
+      "live: a late PING answers without rearming expired WATCH");
+    ok(await E.startWatch(rq), "live: explicit WATCH rearms the expired session");
+    m.sim.knob();
+    await sleep(10);
+    ok(ev.pushes.length === n0 + 1, "live: rearmed WATCH delivers CHANGED again");
+
+    /* a slider drag: 40 values at once -> one SET in flight + one coalesced, the last value wins */
+    const before = sent[C.SET] || 0;
+    const all = [];
+    for (let v = 0; v < 40; v++) all.push(rq(E.req.set(0, 9, v * 3), { key: "0:9" }));
+    await Promise.all(all);
+    ok((sent[C.SET] || 0) - before === 2 && m.state.p[9] === 117 && link.idle, "live: drag SETs coalesce (2 frames for 40 values, latest kept)");
+    ok(ev.timeouts === 0, "live: no timeouts");
+
+    /* older firmware: no reply to WATCH -> false without a "no reply" message; no bank */
+    const o = attach({ legacy: true });
+    E.parse[C.INFO](await o.rq(E.req.info()));
+    const w = await o.rq(E.req.watch(1), { timeout: 60, retries: 0, quiet: true }).then(() => true, () => false);
+    const sw = await E.startWatch(o.rq);
+    const bl = await E.bank.list((rr, oo) => o.rq(rr, { ...oo, timeout: 60, quiet: true })).then(() => "listed", (e) => e.message);
+    ok(!w && !sw && /^timeout/.test(bl) && o.ev.timeouts === 0, "live: older firmware -> WATCH unanswered (fall back to polling), no bank");
+  } finally {
+    for (const session of sessions) session.done();
   }
-
-  /* PING keeps the watch on; without requests it ends */
-  for (let i = 0; i < 4; i++) { await sleep(120); await rq(E.req.ping()); }
-  let n0 = ev.pushes.length;
-  m.sim.knob();
-  await sleep(10);
-  ok(ev.pushes.length === n0 + 1, "live: PING keeps WATCH on");
-  await sleep(320);
-  n0 = ev.pushes.length;
-  m.sim.knob();
-  await sleep(10);
-  ok(ev.pushes.length === n0, "live: WATCH ends by itself without requests");
-
-  /* a slider drag: 40 values at once -> one SET in flight + one coalesced, the last value wins */
-  const before = sent[C.SET] || 0;
-  const all = [];
-  for (let v = 0; v < 40; v++) all.push(rq(E.req.set(0, 9, v * 3), { key: "0:9" }));
-  await Promise.all(all);
-  ok((sent[C.SET] || 0) - before === 2 && m.state.p[9] === 117 && link.idle, "live: drag SETs coalesce (2 frames for 40 values, latest kept)");
-  ok(ev.timeouts === 0, "live: no timeouts");
-  done();
-
-  /* older firmware: no reply to WATCH -> false without a "no reply" message; no bank */
-  const o = attachMock({ legacy: true });
-  E.parse[C.INFO](await o.rq(E.req.info()));
-  const w = await o.rq(E.req.watch(1), { timeout: 60, retries: 0, quiet: true }).then(() => true, () => false);
-  const sw = await E.startWatch(o.rq);
-  const bl = await E.bank.list((rr, oo) => o.rq(rr, { ...oo, timeout: 60, quiet: true })).then(() => "listed", (e) => e.message);
-  ok(!w && !sw && /^timeout/.test(bl) && o.ev.timeouts === 0, "live: older firmware -> WATCH unanswered (fall back to polling), no bank");
-  o.done();
 }
 
 async function preferenceReplies() {
