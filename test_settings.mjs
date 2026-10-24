@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { nativeDisplayContract } from "./test_display_contract.mjs";
+import { menuOrdering } from "./test_menu_order.mjs";
 import { Device } from "./app/src/device.js";
 import { makeMockDevice, v14enc } from "./app/src/proto.js";
 
@@ -124,3 +125,4 @@ console.log("settings: unified/legacy reconnect, INFO/UI_STATE, refresh and stab
 console.log("settings: applied rc0/3/4, refused rc2, all timers/LEDS, sparse IDs, old firmware and errors passed");
 
 nativeDisplayContract();
+await menuOrdering();

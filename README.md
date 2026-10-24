@@ -15,6 +15,7 @@ sent to a server. The site is published at https://hugelton.github.io/Felucca/.
 ```sh
 python3 serve.py            # http://localhost:8766/app/index.html?mock=1
 node test_settings.mjs      # MENU replies, sparse IDs; FELUCCA_ROOT adds actual native settings/backup checks
+node test_menu_order.mjs    # ordered MENU writes during background work, transport failure and close
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
 node test_backup.mjs        # the full backup
@@ -117,6 +118,10 @@ new workflow's first PR, use its automatic pull-request run before merging, beca
 dispatch once the workflow exists on the default branch. No workflow here publishes, flashes or releases anything.
 
 ## Device settings
+
+MENU writes retain the user's order while background reads are busy, including
+dependent AUTO OFF / ALL DARK edits. A failed write does not block later edits;
+closing the session prevents queued edits from transmitting.
 
 The new editor builds Settings from the connected firmware's MENU descriptors, including all six LED
 brightness modes and the AUTO OFF, WAKE and ALL DARK options when advertised. AUTO OFF keeps its combined

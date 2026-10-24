@@ -29,6 +29,7 @@ export class Device {
     this.dump = null; this.steps = []; this.slotUsed = [null, null, null, null]; this.smp = null; this.keys = null;
     this.watch = false; this.v4 = false; this.bank = null; this.sel = 0; this.mix = null; this.song = null;
     this.motion = null; this.preferences = null; this.fm6 = null; this.menu = null;
+    this.menuWriteTail = Promise.resolve();
     this.busy = 0; this.busyEpoch = 0; this.closed = false; this.loaded = false;
     this.needReload = false; this.lastDump = 0; this.rewatch = false; this.stepRR = 0;
     this.selfReload = { n: 0, until: 0 };
@@ -731,21 +732,27 @@ export class Device {
   }
   /* -> rc (as UI_SET: 0 saved, 3 not saved, 4 after STOP, 1 unknown, 2 refused timer order); USB SERIAL changed: the device leaves the bus
      and comes back (every USB port), so this connection ends ("usb") and the page connects again */
-  async menuSet(id, value) {
-    await this.idle();
-    const m = (this.menu || []).find((x) => x.id === id);
-    const before = m ? m.value : null;
-    const rc = await this.op(async () => {
-      const r = parse[CMD.MENU_SET](await this.rq(req.menuSet(id, value), FLASH_OPT));
-      /* 3/4 applied too; 2 refuses a timer pair and returns its unchanged actual value.
-         rc 1 only echoes the request, so it is never authoritative. */
-      if (m && [0, 2, 3, 4].includes(r.rc)) m.value = r.value;
-      if (id === 0 && [0, 3, 4].includes(r.rc)) await this.syncPreferences();   /* (COLOR is the display preference 0) */
-      return r.rc;
+  menuSet(id, value) {
+    // Independent idle() waiters can reorder dependent edits after a reread.
+    // Admit MENU writes in caller order before waiting for background work.
+    const write = this.menuWriteTail.then(async () => {
+      await this.idle();
+      const m = (this.menu || []).find((x) => x.id === id);
+      const before = m ? m.value : null;
+      const rc = await this.op(async () => {
+        const r = parse[CMD.MENU_SET](await this.rq(req.menuSet(id, value), FLASH_OPT));
+        /* 3/4 applied too; 2 refuses a timer pair and returns its unchanged actual value.
+           rc 1 only echoes the request, so it is never authoritative. */
+        if (m && [0, 2, 3, 4].includes(r.rc)) m.value = r.value;
+        if (id === 0 && [0, 3, 4].includes(r.rc)) await this.syncPreferences();   /* (COLOR is the display preference 0) */
+        return r.rc;
+      });
+      if (m && m.name === "USB SERIAL" && [0, 3, 4].includes(rc) && m.value !== before) this.close("usb");
+      else this.emit("menu", this.menu);
+      return rc;
     });
-    if (m && m.name === "USB SERIAL" && [0, 3, 4].includes(rc) && m.value !== before) this.close("usb");
-    else this.emit("menu", this.menu);
-    return rc;
+    this.menuWriteTail = write.catch(() => {}); // a rejected edit cannot poison later admission
+    return write;
   }
 
   async changePreference(id, value) {
