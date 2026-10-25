@@ -56,6 +56,21 @@ class MenuIcons(unittest.TestCase):
                              'MTAB_ICON[MTAB_COUNT] = {ICON_0, ICON_1, ICON_2, ICON_3, ICON_4};')
         self.assertEqual(self.read(), expected)
 
+    def test_obsolete_tab_names_in_comments_do_not_hide_active_names(self):
+        expected = self.read()
+        obsolete = self.names.replace('"SYSTEM"', '"OBSOLETE"')
+        for prefix in ('/* ' + obsolete + ' */\n', '// ' + obsolete + '\n'):
+            with self.subTest(prefix=prefix):
+                self.items.write_text(prefix + self.names)
+                self.assertEqual(self.read(), expected)
+
+    def test_commented_tab_names_cannot_hide_malformed_active_declaration(self):
+        for prefix in ('/* ' + self.names + ' */\n', '// ' + self.names + '\n'):
+            with self.subTest(prefix=prefix):
+                self.items.write_text(prefix + 'MTAB_NAME[MTAB_COUNT] = not_an_array;')
+                with self.assertRaisesRegex(SystemExit, 'malformed MENU tab name'):
+                    self.read()
+
     def test_present_malformed_or_unknown_native_icons_are_not_ignored(self):
         for text in ('MTAB_ICON[MTAB_COUNT] = {ICON_0};',
                      'MTAB_ICON[MTAB_COUNT] = {ICON_0, ICON_1, ICON_2, ICON_3, ICON_UNKNOWN};',

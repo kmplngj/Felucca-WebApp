@@ -65,8 +65,10 @@ def menu_icons(fw, glyph, cmap):
     items, menu = (source_dir(fw) / "menu_items.c").read_text(), (source_dir(fw) / "ui_menu.c").read_text()
     # Comments can mention removed tables or contain obsolete declarations.
     # Preserve quoted C literals while removing both comment forms.
-    menu = re.sub(r'''("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|/\*.*?\*/|//[^\n]*''',
-                  lambda match: match.group(1) or " ", menu, flags=re.S)
+    def uncomment(text):
+        return re.sub(r'''("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|/\*.*?\*/|//[^\n]*''',
+                      lambda match: match.group(1) or " ", text, flags=re.S)
+    items, menu = uncomment(items), uncomment(menu)
     def pairs(names_re, icons_re):
         n, i = re.search(names_re, items, re.S), re.search(icons_re, menu, re.S)
         if not n or not i:
