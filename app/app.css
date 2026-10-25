@@ -415,5 +415,7 @@ input.colour { width: 100%; min-width: 36px; height: 36px; padding: 0; border: 1
 .paldemo .pd-rec { padding: 0 6px; border-radius: 4px; background: var(--prec); color: var(--pink); }
 .paldemo .pd-keys { display: flex; gap: 4px; }
 .paldemo .pd-key { width: 18px; height: 10px; border-radius: 2px; background: var(--pkey); }
-.palwarn { margin: 8px 0 0; font-size: .75rem; color: var(--accent); }
+.palwarn { margin: 8px 0 0; font-size: .875rem; line-height: 1.4; color: var(--accent); }
+.palwarn p { margin: 0 0 4px; }
+.palwarn ul { margin: 0 0 8px; padding-inline-start: 18px; font-variant-numeric: tabular-nums; }
 .livechk { display: inline-flex; gap: 6px; align-items: center; font-size: .75rem; color: var(--mid); }

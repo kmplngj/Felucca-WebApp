@@ -118,13 +118,28 @@ ALL DARK must be later than an enabled AUTO OFF timer. Rejected changes restore 
 RAM-only and deferred-save replies retain the applied value and display their existing save-status messages.
 Saved changes display "Saved", replacing earlier warnings in the status bar. Previous messages remain in the log.
 Device-side changes appear when Settings is reopened. Older firmware keeps its advertised controls.
+Settings opened during connection also loads the supported MIDI LEARN and CUSTOM cards once that connection
+is ready. Closing Settings before then avoids that optional refresh.
 
 For a browser regression without hardware, run `python3 serve.py 8774` and open
 `http://localhost:8774/test_fixtures/menu/settings.html`. It must report PASS. This fixture creates only a
 simulated MIDI device and checks focused rollback, newer picker drafts, request failures and sparse IDs.
 Open `http://localhost:8774/test_fixtures/menu/feedback.html` for the full editor's refusal-to-success regression,
 including the status bar, retained message log and language changes; it must also report PASS.
+Open `http://localhost:8774/test_fixtures/menu/early-settings.html` for full-app connection/loading checks;
+it must report PASS for early and late opening, close-before-load, overlapping refreshes, unsupported firmware,
+session replacement and request failure/retry. Its simulated transport never requests MIDI permission.
 The retained classic editor does not expose the MENU settings UI.
+
+The new editor's **Custom palette** card checks the RGB565 colours and derived roles while editing.
+Warnings list each failing pair and its contrast ratio: text, including TEXT on SURF, needs 4.5:1;
+graphics need 3:1. Ratios use the firmware palette generator's channel expansion and blends;
+displayed failing ratios round down to two
+decimal places. Starting from any of the ten built-in palettes produces no warning. The five colours
+are used as CUSTOM, including when copied from GREY or MONO; their special built-in rendering is not inferred.
+Warnings never block saving or alter colours, stored bytes, live-preview commands or firmware rendering.
+Open `http://localhost:8774/test_fixtures/menu/palette.html` for the mock-only live-warning, save-byte,
+preview/revert and language regression; it must report PASS. Real FM-1 palette/readability checks remain separate.
 
 ## Engine catalogs and backup compatibility
 
