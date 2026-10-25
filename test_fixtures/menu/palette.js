@@ -38,8 +38,14 @@ try {
   live().checked = false;
   for (let i = 0; i < 10; i++) { from(i); check(warning().hidden, `built-in seed ${i} has no warning as CUSTOM`); }
   check(!mock.state.custom.stored && mock.state.custom.preview === null, "editing with live preview off sends no palette change");
+  colour("BG", "#000000");
+  for (const role of ["SURF", "TEXT", "THEME", "ACCENT"]) colour(role, "#ffffff");
+  check(rows().length === 1 && rows()[0].startsWith("TEXT / SURF:") && rows()[0].endsWith("1.00:1"),
+    "text on SURF warns even when every background pair passes");
+  colour("SURF", "#000000");
+  check(warning().hidden && !rows().length, "fixing SURF clears its text warning live");
   for (const role of ["BG", "SURF", "TEXT", "THEME", "ACCENT"]) colour(role, "#000000");
-  check(!warning().hidden && warning().getAttribute("role") === "status" && rows().length === 8, "eight failing pairs exposed in live status");
+  check(!warning().hidden && warning().getAttribute("role") === "status" && rows().length === 9, "nine failing pairs exposed in live status");
   check(rows().every((text) => text.endsWith("1.00:1")) && warning().textContent.includes("4.5:1") && warning().textContent.includes("3:1"), "measured ratios and separate text/graphic limits");
   check(!button("paletteSave").disabled && warning().textContent.includes("still save"), "warning is explicitly non-blocking");
   button("paletteSave").click();
@@ -50,15 +56,15 @@ try {
   from(7);
   check(warning().hidden && !rows().length && mock.state.custom.c.join() === "0,0,0,0,0", "good seed clears status without silently saving it");
   button("paletteRevert").click();
-  await until(() => rows().length === 8, "revert restores saved low-contrast colours");
+  await until(() => rows().length === 9, "revert restores saved low-contrast colours");
   live().checked = true;
   colour("TEXT", "#ffffff");
   await until(() => mock.state.custom.preview?.join() === "0,0,65535,0,0", "live preview uses unchanged op0 RGB565 payload");
   check(mock.state.custom.c.join() === "0,0,0,0,0", "live preview never overwrites saved words");
   button("paletteRevert").click();
-  await until(() => mock.state.custom.preview === null && rows().length === 8, "revert clears live preview");
+  await until(() => mock.state.custom.preview === null && rows().length === 9, "revert clears live preview");
   setLang("ja"); screen.show(dev);
-  check(warning().textContent.includes(t("paletteContrast")) && warning().textContent.includes(t("paletteTextContrast")) && rows().length === 8,
+  check(warning().textContent.includes(t("paletteContrast")) && warning().textContent.includes(t("paletteTextContrast")) && rows().length === 9,
     "Japanese warning retains measured roles and thresholds");
   setLang("en"); screen.show(dev);
   // Leave the failing palette visible for responsive/theme inspection.

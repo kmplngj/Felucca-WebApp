@@ -195,9 +195,12 @@ const until = async (cond, ms = 2000) => { const t = Date.now(); while (!cond() 
       "CUSTOM contrast: all ten built-in five-colour seeds pass without GREY/MONO exceptions");
     const flat = [0x0841, 0x0841, 0x0841, 0x0841, 0x0841], before = flat.join();
     const low = pal.contrastWarnings(flat);
-    ok(low.length === 8 && low.every((x) => x.ratio === 1) && low.filter((x) => x.kind === "text" && x.min === 4.5).length === 4
+    ok(low.length === 9 && low.every((x) => x.ratio === 1) && low.filter((x) => x.kind === "text" && x.min === 4.5).length === 5
        && low.filter((x) => x.kind === "graphics" && x.min === 3).length === 4 && flat.join() === before,
-      "CUSTOM contrast: all eight failing roles/limits reported, input bytes unchanged");
+      "CUSTOM contrast: all nine failing roles/limits reported, input bytes unchanged");
+    const surface = pal.contrastWarnings([0, 0xffff, 0xffff, 0xffff, 0xffff]);
+    ok(surface.length === 1 && surface[0].a === "text" && surface[0].b === "surf" && surface[0].ratio === 1,
+      "CUSTOM contrast: white text on white SURF warns even when every background pair passes");
     const mid = [0, 0, 0x8c51, 0xffff, 0xffff], midWarnings = pal.contrastWarnings(mid);
     ok(pal.readable(mid) && midWarnings.some((x) => x.a === "mid" && x.b === "bg" && x.kind === "text")
        && !midWarnings.some((x) => x.a === "mid" && x.b === "bg" && x.kind === "graphics"),
@@ -937,9 +940,10 @@ if (existsSync(PALETTES)) {
   const fixtures = JSON.parse(py("-c", `
 import importlib.util, json, sys
 s = importlib.util.spec_from_file_location("palettes", sys.argv[1]); p = importlib.util.module_from_spec(s); s.loader.exec_module(p)
-rules = [("text","bg",4.5),("mid","bg",4.5),("theme","bg",4.5),("bg","theme",4.5),("mid","bg",3),("mid","line",3),("accent","bg",3),("theme","bg",3)]
+rules = [("text","bg",4.5),("text","surf",4.5),("mid","bg",4.5),("theme","bg",4.5),("bg","theme",4.5),("mid","bg",3),("mid","line",3),("accent","bg",3),("theme","bg",3)]
 colours = [[p.derive(row)[1][key] for key in ("bg","surf","text","theme","accent")] for row in p.PALETTES]
 colours += [[0,0,v,65535,65535] for v in (0,1,0x0841,0x528a,0x8c51,0xffff)]
+colours += [[0,65535,65535,65535,65535]]
 out = []
 for c in colours:
     d = dict(zip(("bg","surf","text","theme","accent"), c))
@@ -948,12 +952,12 @@ for c in colours:
     out.append(dict(c=c, d=d, ratios=[p.contrast(d[a],d[b]) for a,b,_ in rules], failed=[i for i,(a,b,limit) in enumerate(rules) if p.contrast(d[a],d[b]) < limit]))
 print(json.dumps(out))
 `, PALETTES));
-  ok(fixtures.length === 16 && fixtures.every((f) => {
+  ok(fixtures.length === 17 && fixtures.every((f) => {
     const d = pal.derive(f.c), checks = pal.contrastChecks(f.c);
     return Object.entries(f.d).every(([key, value]) => d[key] === value)
       && checks.every((x, i) => Math.abs(x.ratio - f.ratios[i]) < 1e-12)
       && checks.flatMap((x, i) => x.ratio < x.min ? [i] : []).join() === f.failed.join();
-  }), "CUSTOM contrast: actual producer RGB565 blends, floor/linear ratios and failures (16 palettes,128 pairs)");
+  }), "CUSTOM contrast: actual producer RGB565 blends, floor/linear ratios and failures (17 palettes,153 pairs)");
   ok((() => { try { py(join(HERE, "gen_tokens.py"), join(APP, "tokens.css"), "--check", "--palettes", PALETTES); return true; } catch { return false; } })(),
     "tokens: app/tokens.css is what gen_tokens.py writes (from gen_ui_palettes.py)");
   const css = readFileSync(join(APP, "tokens.css"), "utf8");

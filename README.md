@@ -127,8 +127,9 @@ including the status bar, retained message log and language changes; it must als
 The retained classic editor does not expose the MENU settings UI.
 
 The new editor's **Custom palette** card checks the RGB565 colours and derived roles while editing.
-Warnings list each failing pair and its contrast ratio: text needs 4.5:1, graphics 3:1. Ratios use the
-firmware palette generator's channel expansion and blends; displayed failing ratios round down to two
+Warnings list each failing pair and its contrast ratio: text, including TEXT on SURF, needs 4.5:1;
+graphics need 3:1. Ratios use the firmware palette generator's channel expansion and blends;
+displayed failing ratios round down to two
 decimal places. Starting from any of the ten built-in palettes produces no warning. The five colours
 are used as CUSTOM, including when copied from GREY or MONO; their special built-in rendering is not inferred.
 Warnings never block saving or alter colours, stored bytes, live-preview commands or firmware rendering.

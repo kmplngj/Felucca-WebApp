@@ -66,7 +66,7 @@ export function contrast(a, b) {
 
 /* A built-in's five colours become CUSTOM here: GREY/MONO special rendering must not be inferred from values. */
 const CONTRAST_RULES = [
-  ["text", "bg", "text", 4.5], ["mid", "bg", "text", 4.5], ["theme", "bg", "text", 4.5], ["bg", "theme", "text", 4.5],
+  ["text", "bg", "text", 4.5], ["text", "surf", "text", 4.5], ["mid", "bg", "text", 4.5], ["theme", "bg", "text", 4.5], ["bg", "theme", "text", 4.5],
   ["mid", "bg", "graphics", 3], ["mid", "line", "graphics", 3], ["accent", "bg", "graphics", 3], ["theme", "bg", "graphics", 3],
 ];
 
