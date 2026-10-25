@@ -126,6 +126,15 @@ Open `http://localhost:8774/test_fixtures/menu/feedback.html` for the full edito
 including the status bar, retained message log and language changes; it must also report PASS.
 The retained classic editor does not expose the MENU settings UI.
 
+The new editor's **Custom palette** card checks the RGB565 colours and derived roles while editing.
+Warnings list each failing pair and its contrast ratio: text needs 4.5:1, graphics 3:1. Ratios use the
+firmware palette generator's channel expansion and blends; displayed failing ratios round down to two
+decimal places. Starting from any of the ten built-in palettes produces no warning. The five colours
+are used as CUSTOM, including when copied from GREY or MONO; their special built-in rendering is not inferred.
+Warnings never block saving or alter colours, stored bytes, live-preview commands or firmware rendering.
+Open `http://localhost:8774/test_fixtures/menu/palette.html` for the mock-only live-warning, save-byte,
+preview/revert and language regression; it must report PASS. Real FM-1 palette/readability checks remain separate.
+
 ## Engine catalogs and backup compatibility
 
 Both editors read the versioned engine catalog (`INFO 49 01`) and use the advertised user-favourite marker
