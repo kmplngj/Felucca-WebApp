@@ -14,7 +14,8 @@ sent to a server. The site is published at https://hugelton.github.io/Felucca/.
 
 ```sh
 python3 serve.py            # http://localhost:8766/app/index.html?mock=1
-node test_settings.mjs      # MENU replies, sparse IDs and AUTO OFF constraints (mock only)
+node test_settings.mjs      # MENU replies, sparse IDs; FELUCCA_ROOT adds actual native settings/backup checks
+node test_menu_order.mjs    # ordered MENU writes during background work, transport failure and close
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
 node test_backup.mjs        # the full backup
@@ -29,6 +30,13 @@ build), `FELUCCA_PALETTES` (`tools/gen_ui_palettes.py`), `FELUCCA_INTERTIGHT`
 (`assets/fonts/InterTight[wght].ttf`, or the identical retained source at `docs/manual/fonts/InterTight[wght].ttf`),
 and `FELUCCA_FIRMWARE` (the firmware checkout root, for icon comparisons; the older `src/` + `tools/` layout is also accepted).
 Without them those checks are skipped.
+
+`gen_icons.py` derives parameter, waveform, MOD and legacy row icons from the firmware.
+Its `MENU_TAB_GLYPHS` input owns the five existing WebApp tab glyphs, independently of
+whether native tabs draw icons or text. Firmware tab names and any retained native icon
+table are validated; unknown, missing or duplicate tabs and missing font glyphs fail.
+This compatibility rule keeps the committed `app/src/paramicons.js` bytes unchanged.
+The causal generator fixtures run with the normal CI startup regressions.
 
 `FELUCCA_ROOT=/path/to/Felucca node test_catalog.mjs` also compiles the firmware's actual `tests/engid_test.c`
 harness with `CC` (default `cc`, optimized with `-O1`) to test real INFO, settings, favourite and unavailable-track
@@ -111,6 +119,10 @@ dispatch once the workflow exists on the default branch. No workflow here publis
 
 ## Device settings
 
+MENU writes retain the user's order while background reads are busy, including
+dependent AUTO OFF / ALL DARK edits. A failed write does not block later edits;
+closing the session prevents queued edits from transmitting.
+
 The new editor builds Settings from the connected firmware's MENU descriptors, including all six LED
 brightness modes and the AUTO OFF, WAKE and ALL DARK options when advertised. AUTO OFF keeps its combined
 mode/time values over MIDI; the native panel's detail page does not add a separate editor protocol.
@@ -120,6 +132,29 @@ Saved changes display "Saved", replacing earlier warnings in the status bar. Pre
 Device-side changes appear when Settings is reopened. Older firmware keeps its advertised controls.
 Settings opened during connection also loads the supported MIDI LEARN and CUSTOM cards once that connection
 is ready. Closing Settings before then avoids that optional refresh.
+
+Tagged `INFO` preferences retire controls independently: bit 4 hides LARGE and bit 5 hides STYLE. Without the
+respective capability the older control remains available. Their descriptors, historical values and opaque backup
+bytes stay unchanged; neither bit is a writable preference slot. GRAPH appears only when firmware advertises its
+MENU descriptor, using the supplied SCOPE / TURN / CURVE / STILL values. The editor sends its logical MENU value;
+firmware owns defaults, storage and native drawing.
+
+The baseline `app/index.html?mock=1` models the prior unified-size profile (LARGE hidden, STYLE available), while
+`&noUnifiedUI=1` retains both older controls. The explicit future-contract `&graph=1` profile advertises both
+retirements and GRAPH, initially TURN. It does not change the reviewed firmware CI pin or baseline mock tables.
+`test_fixtures/menu/unified.html` checks independent bits, old/new reconnects, refresh, unknown bit 64, hidden
+historical values and GRAPH controls; it must report PASS.
+
+With generated firmware headers and `FELUCCA_ROOT` set, `node test_settings.mjs` also compiles the real producer's
+editor harness for CPU2 on/off and writes fresh response fixtures under `build/display-contract/`. It checks stable
+IDs, informational-slot refusal, logical GRAPH writes when present, preservation of ANIM and other settings bytes,
+and opaque settings backup wire/C import-export round trips. The native no-flash harness returns applied-in-RAM
+status; mock scenarios separately cover saved/deferred statuses. Without the firmware checkout that native check
+prints an explicit skip; CI requires the input. After the firmware-backed suite or full gate, open
+`test_fixtures/menu/display-contract.html` and expect PASS from actual C response replay. An optional
+`?compare=<40-character previously captured revision>` additionally replays its archived on/off fixtures across
+reconnections; missing requested data fails. These browser/host checks do not qualify physical USB, flash durability
+or the native GRAPH display on an FM-1.
 
 For a browser regression without hardware, run `python3 serve.py 8774` and open
 `http://localhost:8774/test_fixtures/menu/settings.html`. It must report PASS. This fixture creates only a

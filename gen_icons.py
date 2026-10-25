@@ -10,7 +10,9 @@ DIR: a Felucca checkout (firmware/src/ and tools/) or the older felucca/ layout
 src/icons.c (ICON_MAP: label -> ICON_*, WAVE_ICON: a wave's name -> ICON_*) and tools/gen_aa_icons.py
 (LEGACY / EXTRA: the icon's name -> the glyph, a tuple = the first the font has), and the MOD matrix's
 mod_src_icon / mod_dst_icon, and the MENU rows' (src/menu_items.c, src/ui_menu.c). So a parameter shows the
-icon the device draws for it. --check compares OUT.js with what this would write.
+icon the device draws for it. MENU_TAB_GLYPHS retains the existing client tab presentation,
+validated against firmware tab names and the font even when native tabs become text-only.
+--check compares OUT.js with what this would write.
 """
 import ast
 import json
@@ -22,6 +24,13 @@ from pathlib import Path
 from fontTools.ttLib import TTFont
 
 HERE = Path(__file__).resolve().parent
+
+# Existing WebApp presentation, independent of whether native tabs draw icons.
+# Firmware still supplies the tab names and all parameter/wave/MOD icon mappings.
+MENU_TAB_GLYPHS = {
+    "DISPLAY": "symbol_eye", "CONTROL": "ui_knob", "AUDIO": "control_speaker_2",
+    "MIDI": "port_midi", "SYSTEM": "symbol_cog",
+}
 
 
 def source_dir(fw):
@@ -46,19 +55,46 @@ def dicts(py):
     return out
 
 
-def menu_icons(fw, glyph):
-    """the MENU's icons: up to 1.0.4 one per row (ui_menu.c draw_menu's ICO, in menu_items.c MI_NAME's order), from
-    1.0.5 one per tab (MTAB_ICON, MTAB_NAME): {"rows": name -> glyph, "tabs": tab name -> glyph}"""
+def menu_icons(fw, glyph, cmap):
+    """Native legacy row icons and client-owned tab glyphs keyed by native names.
+
+    Validate older native tab tables when present; text-only native tabs are valid.
+    """
     if not (source_dir(fw) / "menu_items.c").exists():
         return {"rows": {}, "tabs": {}}
     items, menu = (source_dir(fw) / "menu_items.c").read_text(), (source_dir(fw) / "ui_menu.c").read_text()
+    # Comments can mention removed tables or contain obsolete declarations.
+    # Preserve quoted C literals while removing both comment forms.
+    def uncomment(text):
+        return re.sub(r'''("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|/\*.*?\*/|//[^\n]*''',
+                      lambda match: match.group(1) or " ", text, flags=re.S)
+    items, menu = uncomment(items), uncomment(menu)
     def pairs(names_re, icons_re):
         n, i = re.search(names_re, items, re.S), re.search(icons_re, menu, re.S)
         if not n or not i:
             return None
         return {k: glyph.get(v) or glyph.get("ICON_GENERIC") for k, v in zip(re.findall(r'"([^"]+)"', n.group(1)), re.findall(r"ICON_\w+", i.group(1)))}
     rows = pairs(r"MI_NAME\[MI_COUNT\] = \{(.*?)\};", r"static const uint16_t ICO\[MI_COUNT\] = \{(.*?)\};")
-    tabs = pairs(r"MTAB_NAME\[MTAB_COUNT\] = \{(.*?)\};", r"static const uint16_t MTAB_ICON\[MTAB_COUNT\] = \{(.*?)\};")
+    names = re.search(r"\bMTAB_NAME\s*\[MTAB_COUNT\]\s*=\s*\{(.*?)\};", items, re.S)
+    tabs = None
+    if names:
+        labels = re.findall(r'"([^"]+)"', names.group(1))
+        if len(labels) != len(set(labels)) or set(labels) != set(MENU_TAB_GLYPHS):
+            raise SystemExit("gen_icons.py: unknown, missing or duplicate MENU tab names; update client tab glyph choices")
+        if not set(MENU_TAB_GLYPHS.values()) <= cmap:
+            raise SystemExit("gen_icons.py: client MENU tab glyph missing from fukiai.ttf")
+        # Older producers draw tab icons. Validate their table if present, but
+        # keep client presentation stable when native tabs become text-only.
+        native = re.search(r"\bMTAB_ICON\s*\[MTAB_COUNT\]\s*=\s*\{(.*?)\};", menu, re.S)
+        if native:
+            icons = re.findall(r"ICON_\w+", native.group(1))
+            if len(icons) != len(labels) or any(not glyph.get(icon) for icon in icons):
+                raise SystemExit("gen_icons.py: malformed native MENU tab icons")
+        elif re.search(r"\bMTAB_ICON\b", menu):
+            raise SystemExit("gen_icons.py: malformed native MENU tab icon declaration")
+        tabs = {label: MENU_TAB_GLYPHS[label] for label in labels}
+    elif re.search(r"\bMTAB_NAME\b", items):
+        raise SystemExit("gen_icons.py: malformed MENU tab name declaration")
     if rows is None and tabs is None:
         raise SystemExit("gen_icons.py: no MENU icons (ICO or MTAB_ICON in ui_menu.c)")
     return {"rows": rows or {}, "tabs": tabs or {}}
@@ -93,7 +129,7 @@ def table(fw):
         if not m:
             raise SystemExit(f"gen_icons.py: no {fn} table in icons.c")
         return [glyph.get(ic) or glyph.get("ICON_GENERIC") for ic in re.findall(r"ICON_\w+", m.group(1))]
-    mods = {"src": arr("mod_src_icon"), "dst": arr("mod_dst_icon"), "menu": menu_icons(fw, glyph)}
+    mods = {"src": arr("mod_src_icon"), "dst": arr("mod_dst_icon"), "menu": menu_icons(fw, glyph, cmap)}
     special = {k: glyph.get(k) for k in ("ICON_LFO_WAVE", "ICON_DIVISION", "ICON_CUTOFF", "ICON_NOISE", "ICON_RATE",
                                           "ICON_SLICE", "ICON_GATE", "ICON_ORDER", "ICON_GENERIC")}
     return labels, waves, special, mods, sorted(set(missing))
