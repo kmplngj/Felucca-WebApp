@@ -229,6 +229,17 @@ class AttemptSummary(unittest.TestCase):
         self.run_gate("--firmware", str(firmware), env={**env, "FELUCCA_INTERTIGHT": "chosen-font.ttf"})
         self.assertEqual(json.loads(marker.read_text()), str((self.root / "chosen-font.ttf").resolve()))
 
+    def test_stock_folder_reaches_locked_runner(self):
+        # A supplied FELUCCA_STOCK must survive the FELUCCA_* reset: stock-file skips are then unexpected, not documented.
+        firmware, revision = self.firmware_checkout()
+        self.pin.write_text(json.dumps({"repository": "kmplngj/Felucca", "revision": revision}))
+        marker = Path(self.temp.name) / "stock.json"
+        env = self.fake_tool("uv", "import os,json\nfrom pathlib import Path\n"
+                             f"Path({str(marker)!r}).write_text(json.dumps(os.environ.get('FELUCCA_STOCK')))\n"
+                             "raise SystemExit(73)\n")
+        self.run_gate("--firmware", str(firmware), env={**env, "FELUCCA_STOCK": "private-stock"})
+        self.assertEqual(json.loads(marker.read_text()), str((self.root / "private-stock").resolve()))
+
     def test_missing_font_replaces_previous_green_without_skip(self):
         firmware, revision = self.firmware_checkout()
         self.git_checkout(self.root)

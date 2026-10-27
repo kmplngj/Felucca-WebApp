@@ -193,6 +193,9 @@ def main():
             raise RuntimeError("initialize firmware submodules at their pinned commits")
         env = {k: v for k, v in os.environ.items() if not k.startswith("FELUCCA_")}
         env.update(PYTHONDONTWRITEBYTECODE="1", FELUCCA_PROFILE="standard", FELUCCA_FONT="m8stealth")
+        if os.environ.get("FELUCCA_STOCK"):
+            # the private official V15/V16 files (test_web.mjs): once supplied, their checks must run, never skip
+            env["FELUCCA_STOCK"] = str(Path(os.environ["FELUCCA_STOCK"]).expanduser().resolve())
         if os.environ.get("FELUCCA_INTERTIGHT"):
             # Resolve before uv changes cwd; an explicit bad override must not fall back to firmware.
             env["FELUCCA_INTERTIGHT"] = str(Path(os.environ["FELUCCA_INTERTIGHT"]).expanduser().resolve())

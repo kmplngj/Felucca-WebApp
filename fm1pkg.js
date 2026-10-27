@@ -26,6 +26,9 @@ export const STOCK_PINS = {
     flashSize: 0xA9000, appOff: 16704, appSize: 597928 },
 };
 export const STOCK_LOADER = "ota-FM-1_015";
+// Felucca's own update loader (tools/fm1_install.py LOADER_FAMILIES "felucca-v1"): the only one a Felucca package is
+// written through, resumed or newly staged; M-VAVE's (STOCK_LOADER) would write it over the whole flash
+export const FELUCCA_LOADER = "ota-FM-1_900";
 const STOCK_OTA = { size: 19969, hcrc: 0xEBAA, dcrc: 0x5881, len: 0x4DE1 };
 export const STOCK_MAX_SIZE = 0x200000;   // a larger file is refused before it is read (fm1_install.py MAX_PKG)
 const STOCK_RE = /^FM-1_0\d\d$/;           // M-VAVE's identities (M-UPGRADE versions): pinned files only

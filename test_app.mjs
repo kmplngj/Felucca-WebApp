@@ -726,8 +726,19 @@ const until = async (cond, ms = 2000) => { const t = Date.now(); while (!cond() 
     const words = (k) => TX.en[k] && TX.ja[k] && TX.en[k].includes("%s") === TX.ja[k].includes("%s");
     ok(Object.keys(TX.en).sort().join() === Object.keys(TX.ja).sort().join()
        && ["open", "badloader", "stockOpenPkg", "stockMboot", "stockUnpinned", "stockNotOfficial", "stockLayout"].every((k) => codes.includes(k))
-       && codes.filter((k) => k !== "badreq").every(words) && ["stockValid", "stockOther"].every(words),
+       && codes.filter((k) => k !== "badreq").every(words)
+       && ["stockValid", "stockOther", "badloaderMain", "stockStopped", "stockLost", "stockNoloader", "stockNotfound", "stockDenied"].every(words),
       "site: the installer words every package / update refusal (FM1 Open, m-bootloader, unpinned) in ja and en");
+    /* #619: the main Install writes through Felucca's loader only, resumed or staged; the return to stock never
+       tells the user to press Install (which writes Felucca) */
+    const mainGo = pkgHtml.slice(pkgHtml.indexOf('$("go").addEventListener'), pkgHtml.indexOf('$("stock-file").addEventListener'));
+    const stockGo = pkgHtml.slice(pkgHtml.indexOf('$("stock-go").addEventListener'));
+    ok(/up\.resume\(image, step, meta\.product, FELUCCA_LOADER\)/.test(mainGo) && /up\.install\(image, meta\.product, step, FELUCCA_LOADER\)/.test(mainGo)
+       && /"badloader"\) sayK\("badloaderMain"/.test(mainGo) && inst.includes('FELUCCA_LOADER = "ota-FM-1_900"'),
+      "site: the main Install requires Felucca's loader (ota-FM-1_900), resumed or newly staged");
+    ok(!/sayK\("(?:stopped|lost|noloader|notfound|denied)"/.test(stockGo) && /sayStock\(e\.code/.test(stockGo)
+       && ["stockStopped", "stockLost", "stockNoloader", "stockNotfound", "stockDenied"].every((k) => !TX.en[k].includes("press Install") && TX.ja[k].includes("公式ファームウェアへ戻す")),
+      "site: the return to stock's stopped / lost / not-found texts point to the return, not Install");
     ok(!/^import /m.test(inst) && inst.includes("FM-1_016") && inst.includes("function refuseOpen"),
       "site: the installer inlines the stock pins and the FM1 Open refusal (no module import left)");
   }

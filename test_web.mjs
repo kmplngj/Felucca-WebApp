@@ -19,7 +19,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
-import { buildFeluccaPackage, logicalImage, productOf, validateStockPackage, OPEN_RE, STOCK_LOADER, STOCK_PINS } from "./fm1pkg.js";
+import { buildFeluccaPackage, logicalImage, productOf, validateStockPackage, OPEN_RE, STOCK_LOADER, FELUCCA_LOADER, STOCK_PINS } from "./fm1pkg.js";
 import { Updater, pack7, unpack7 } from "./fm1ota.js";
 
 let failed = 0;
@@ -2109,11 +2109,11 @@ async function stockPackages() {
   if (existsSync(PY) && py(`import sys; sys.path.insert(0, sys.argv[1]); import fm1_install as I
 print(int(hasattr(I, "STOCK_SHA256")))`, TOOLS).toString().trim() === "1") {
     const P = JSON.parse(py(`import sys, json; sys.path.insert(0, sys.argv[1]); import fm1_install as I
-print(json.dumps({"sha": I.STOCK_SHA256, "loader": I.LOADER_FAMILIES["stock"], "open": I.OPEN_RE.pattern,
+print(json.dumps({"sha": I.STOCK_SHA256, "loader": I.LOADER_FAMILIES["stock"], "own": I.LOADER_FAMILIES["felucca-v1"], "open": I.OPEN_RE.pattern,
                   "mboot": I.MBOOT_PRODUCT, "stock": I.STOCK_RE.pattern}))`, TOOLS));
     ok(Object.keys(P.sha).sort().join() === Object.keys(STOCK_PINS).sort().join()
-       && Object.entries(P.sha).every(([k, v]) => STOCK_PINS[k].sha256 === v) && P.loader === STOCK_LOADER,
-      "stock: pins (identities, SHA-256, loader) == fm1_install.py");
+       && Object.entries(P.sha).every(([k, v]) => STOCK_PINS[k].sha256 === v) && P.loader === STOCK_LOADER && P.own === FELUCCA_LOADER,
+      "stock: pins (identities, SHA-256, loader, Felucca's loader) == fm1_install.py");
     ok(OPEN_RE.source === `^(?:${P.open})$` && P.mboot === "FM-1_099" && P.stock === "FM-1_0\\d\\d",
       "stock: FM1 Open / m-bootloader / FM-1_0NN rules == fm1_install.py");
   } else console.log("stock pins vs fm1_install.py: skipped (needs FELUCCA_TOOLS with the #619 installer)");
@@ -2344,6 +2344,14 @@ async function updater() {
     const x = await new Updater(d.access).install(image, "FM-1_016", null, STOCK_LOADER).then(() => null, (y) => y);
     ok(x && x.code === "open" && x.detail === id && d.upgrades.length === 0, `fm1ota.js: FM1 Open (${id}) refused, nothing sent`);
   }
+  /* FM1 Open's own port name is "FM1" (no hyphen): found, and refused with its explanation, not "notfound" */
+  for (const id of ["FM1_OFFICIAL_OPEN", "FM-1_8123456"]) {
+    const d = new FakeFM1(image, { identity: id });
+    d.boot(id, "FM1");
+    const x = await new Updater(d.access).install(image, "FM-1_900", null, FELUCCA_LOADER).then(() => null, (y) => y);
+    ok(x && x.code === "open" && x.detail === id && d.upgrades.length === 0 && d.served === 0,
+      `fm1ota.js: FM1 Open (${id}) on port "FM1" refused with its explanation, nothing sent`);
+  }
   {
     const d = new FakeFM1(image, { identity: "FM-1_8123456" });
     const id = await new Updater(d.access).find((i) => i.model === "FM-1" || i.open);
@@ -2363,6 +2371,21 @@ async function updater() {
   d6.boot("ota-FM-1_900", "Felucca Update");
   const e6 = await new Updater(d6.access).resume(image, null, "FM-1_015", STOCK_LOADER).then(() => null, (y) => y);
   ok(e6 && e6.code === "badloader" && d6.upgrades.length === 0, "fm1ota.js: resuming stock on another loader -> 'badloader', nothing sent");
+  /* the main Install (index_pkg.html: FELUCCA_LOADER): M-VAVE's loader left by an interrupted return to stock would
+     write the Felucca package over the whole flash. Refused, nothing sent (fm1_install.py require_loader) */
+  const d7 = new FakeFM1(image);
+  d7.boot(STOCK_LOADER, "FM-1");
+  const e7 = await new Updater(d7.access).resume(image, null, "FM-1_900", FELUCCA_LOADER).then(() => null, (y) => y);
+  ok(e7 && e7.code === "badloader" && e7.detail === STOCK_LOADER && d7.upgrades.length === 0 && d7.served === 0,
+    "fm1ota.js: main Install resuming on M-VAVE's loader (ota-FM-1_015) -> 'badloader', nothing sent");
+  const d8 = new FakeFM1(image, { identity: "FM-1_015", loader: STOCK_LOADER });
+  const e8 = await new Updater(d8.access).install(image, "FM-1_900", null, FELUCCA_LOADER).then(() => null, (y) => y);
+  ok(e8 && e8.code === "badloader" && e8.detail === STOCK_LOADER && d8.upgrades.join() === "FM-1_015",
+    "fm1ota.js: main Install, M-VAVE's loader after staging -> 'badloader', nothing sent to it");
+  const d9 = new FakeFM1(image);
+  d9.boot(FELUCCA_LOADER, "Felucca Update");
+  const r9 = await new Updater(d9.access).resume(image, null, "FM-1_900", FELUCCA_LOADER).catch((y) => y);
+  ok(r9 === true && d9.bad === 0 && d9.upgrades.join() === FELUCCA_LOADER, "fm1ota.js: main Install resumes on Felucca's loader");
 }
 
 await editorMock();
