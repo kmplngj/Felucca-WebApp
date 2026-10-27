@@ -2208,12 +2208,15 @@ class FakeFM1 {
 
 async function updaterIdle() {
   // Only this production-module VM owns fake time. Other protocol tests retain
-  // real timers; only export keywords are removed from the actual updater source.
+  // real timers; export keywords and the module import (supplied below: fm1pkg.js OPEN_RE) are removed from the
+  // actual updater source.
   let now = 0;
   const source = readFileSync(join(HERE, "fm1ota.js"), "utf8");
-  const O = vm.runInNewContext(source.replace(/^export /gm, "")
+  const imports = source.match(/^import .*$/gm) || [];
+  ok(imports.length === 1 && imports[0] === 'import { OPEN_RE } from "./fm1pkg.js";', "updater idle: the VM supplies the updater's only import");
+  const O = vm.runInNewContext(source.replace(/^import .*$/gm, "").replace(/^export /gm, "")
     + ";({ Updater, pack7, parseRequest, parseIdentity, response })", {
-    Date: class extends Date { static now() { return now; } }, TextEncoder,
+    Date: class extends Date { static now() { return now; } }, TextEncoder, OPEN_RE,
     setTimeout(callback, ms) { now += ms; queueMicrotask(callback); return 1; },
     clearTimeout() {},
   });
