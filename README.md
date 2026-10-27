@@ -248,11 +248,25 @@ compatible device. It never requires writing an old fixture into hardware.
 
 Migration targets the current standard profile (111 parameters and matching playable engine IDs). Other profiles
 can still download originals, but conversion is disabled with a target-mismatch explanation. Legacy FUN1..FUN9 and
-older-count FUN10 projects plus supported user-preset records can convert to files. Settings, the retired FM6 bank
+older-count FUN10 projects plus supported user-preset records can convert to files. A full-count FUN10 file opened
+without a manifest is also LEGACY when its header still requests the old GM drum-part or PHYS conversion
+(`parts != 4` or `phys < 2`); Migrate uses the existing conversion and keeps the original bytes. Device listings and
+supplied manifests retain their reported state, including older firmware's labels. Settings, the retired FM6 bank
 and converted presets' FM6 patch links are not converted. Newer, damaged and unknown formats are preserved for
 export and refused for conversion. A migrated `.bin` is a recovery file, not an installable firmware package or an
 upload-ready project file; there is no current-schema upload in this workflow. Real USB/device observations remain
 separate from the host and mock tests.
+
+The header classifier follows the codec proposed in [Felucca PR594](https://github.com/kmplngj/Felucca/pull/594),
+not the older classifier on firmware main. `node test_legacy.mjs` covers the header truth table, conversion and actual
+offline Files actions without a device. For its additional native comparison, set
+`FELUCCA_CODEC_ROOT=/path/to/Felucca-at-00253c4970815a4c90fac92cf318cebeb5adf805` before that command. This separate
+oracle requires that clean PR594 checkout, its exact Engines submodule and generated standard headers in `build/gen`;
+it compiles the existing native probe and checks all 25 header cases plus count/hash refusals. It is independent of
+`FELUCCA_ROOT`, which retains the ordinary firmware tables/vectors/corpus comparison, including byte-exact converted
+outputs; its corpus check explicitly accepts older native CURRENT labels for these full-count legacy headers.
+No target image is required
+for the header probe, and it does not establish hardware or upload acceptance.
 
 ## Licence
 

@@ -140,7 +140,8 @@ const engName = (e) => (e < T.ENG_ID_MAX ? (e === T.ENGI_DIGITAL ? "DIGITAL" : T
 
 /* ------------------------------------------------------------- projects --- */
 /* the format of a stored project: {fmt (1..10), np, size, state: "current" | "legacy" | "unknown"} (editor_backup.c
-   ed_raw_kind: magic, size word = its length, FNV-1a last; a FUN10 by its parameter count) */
+   codec proj_classify: magic, size word = its length, FNV-1a last; a FUN10 by its parameter count and header).
+   Full-count records can still need the pre-1.0 GM drum-part / PHYS conversions already handled by unpack. */
 export function projectFormat(b) {
   const n = b.length;
   if (n < 8) return { fmt: 0, state: n ? "unknown" : "empty", size: n };
@@ -155,7 +156,8 @@ export function projectFormat(b) {
           return { fmt: f, np, size: n, state: "unknown" };
       }
       if (f < 10) return { fmt: f, np: f >= 7 ? b[66] : f >= 4 ? NP_V4 : f === 3 ? NP_V3 : NP_V2, state: "legacy", size: n };
-      return { fmt: 10, np, size: n, state: np === T.P_COUNT ? "current" : np >= 8 && np < T.P_COUNT ? "legacy" : "unknown" };
+      return { fmt: 10, np, size: n,
+        state: np === T.P_COUNT && b[63] === T.NPART && b[64] >= T.PROJ_PHYS ? "current" : "legacy" };
     }
   }
   return { fmt: 0, state: "unknown", size: n };
