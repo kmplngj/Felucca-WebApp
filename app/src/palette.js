@@ -4,7 +4,8 @@
 // CUSTOM, the user's palette (1.6, EDITOR_PROTOCOL.md "CUSTOM palette"): the tokens the device derives from the five
 // colours a palette stores (BG SURF TEXT THEME ACCENT, RGB565), and the colour conversions of the page. A port of
 // felucca/src/gfx.c (ux_mix, palette_set): the editor shows what the device will draw. The rule for colours that are
-// readable and the built-in palettes are in proto.js (the protocol section: the mock device keeps the same rule).
+// readable and the built-in palettes are in proto.js (the protocol section: the mock device keeps that legacy rule).
+// Editing warnings below additionally check the derived text and graphic roles against contrast ratios.
 
 import { PAL_BUILTIN, PAL_ROLES, PAL_RULE, palLuma, palReadable, palUnreadable } from "./proto.js";
 
@@ -51,3 +52,30 @@ export function derive(c) {
     lane: mix(surf, theme, 10), grid: mix(surf, text, 6), rec: light ? REC_LIGHT : REC_DARK, light,
   };
 }
+
+/* Match tools/gen_ui_palettes.py: contrast uses floored 8-bit channels, not the rounded CSS preview. */
+function relativeLuma(c) {
+  const linear = (x) => { const v = Math.floor(x) / 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * linear((c >> 11) * 255 / 31) + 0.7152 * linear(((c >> 5) & 63) * 255 / 63) + 0.0722 * linear((c & 31) * 255 / 31);
+}
+
+export function contrast(a, b) {
+  const x = relativeLuma(a), y = relativeLuma(b);
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+
+/* A built-in's five colours become CUSTOM here: GREY/MONO special rendering must not be inferred from values. */
+const CONTRAST_RULES = [
+  ["text", "bg", "text", 4.5], ["text", "surf", "text", 4.5], ["mid", "bg", "text", 4.5], ["theme", "bg", "text", 4.5], ["bg", "theme", "text", 4.5],
+  ["mid", "bg", "graphics", 3], ["mid", "line", "graphics", 3], ["accent", "bg", "graphics", 3], ["theme", "bg", "graphics", 3],
+];
+
+export function contrastChecks(c) {
+  const d = derive(c);
+  return CONTRAST_RULES.map(([a, b, kind, min]) => ({ a, b, kind, min, ratio: contrast(d[a], d[b]) }));
+}
+
+export function contrastWarnings(c) { return contrastChecks(c).filter((x) => x.ratio < x.min); }
+
+/* Never round a failing value up to the advertised minimum. Classification uses the unrounded ratio. */
+export function contrastLabel(ratio) { return (Math.floor(ratio * 100) / 100).toFixed(2) + ":1"; }

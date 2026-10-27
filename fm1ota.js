@@ -166,13 +166,13 @@ export class Updater {
     let served = 0, last = Date.now();
     for (;;) {
       const pkt = await link.read(1000);
-      if (!pkt) {
+      const r = pkt ? parseRequest(pkt) : null;
+      // Unrelated/malformed SysEx is not progress, even while the queue is busy.
+      if (!r) {
         if (link.lost) return { served, finished: false, lost: true };
         if (Date.now() - last > idleMs) return { served, finished: false };
         continue;
       }
-      const r = parseRequest(pkt);
-      if (!r) continue;
       last = Date.now();
       if (r.addr === 0xE0000000 || r.addr === 0xF0000000) {
         link.send(response(r.addr, [...new TextEncoder().encode("success"), 0]));
