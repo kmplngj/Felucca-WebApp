@@ -46,6 +46,20 @@ JavaScript checks still run and this native check is explicitly skipped.
 
 The editor protocol is described in the firmware repository (`web/EDITOR_PROTOCOL.md`).
 
+## Installer idle handling
+
+The browser updater allows 8 seconds without a valid update request during staging
+and 180 seconds during writing. Unrelated or malformed SysEx does not renew that idle
+budget or hide a disconnected port. Valid requests renew the budget, so a progressing
+transfer may take longer than the idle interval. Stalled or disconnected transfers
+retain their existing results and phase-specific retry guidance.
+
+Run `node test_web.mjs` and `FELUCCA_PROTO=app node test_web.mjs` for the simulated
+updater and protocol checks. The `ota idle:` cases use a private fake clock with the
+actual updater loop: busy invalid traffic stops, while a long progressing transfer
+and both finish acknowledgments remain valid. These tests request no MIDI permission
+and send nothing to hardware; real USB/update/recovery qualification remains separate.
+
 ## Continuous integration
 
 The **WebApp CI** workflow validates a candidate client on relevant pull requests and pushes to `main`.
