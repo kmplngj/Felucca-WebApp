@@ -2154,12 +2154,21 @@ class FakeFM1 {
 
 async function updaterIdle() {
   // Only this production-module VM owns fake time. Other protocol tests retain
-  // real timers; only export keywords are removed from the actual updater source.
+  // real timers; export keywords and the updater's fm1pkg.js imports (supplied from the real module) are removed
+  // from the actual updater source.
   let now = 0;
   const source = readFileSync(join(HERE, "fm1ota.js"), "utf8");
-  const O = vm.runInNewContext(source.replace(/^export /gm, "")
+  const pkg = await import("./fm1pkg.js"), imported = {};
+  const imports = source.match(/^import .*$/gm) || [];
+  for (const line of imports) {
+    const m = line.match(/^import \{([^}]*)\} from "\.\/fm1pkg\.js";$/);
+    ok(m, `updater idle: supported updater import (${line})`);
+    for (const name of m ? m[1].split(",").map((n) => n.trim()).filter(Boolean) : [])
+      imported[name] = pkg[name];
+  }
+  const O = vm.runInNewContext(source.replace(/^import .*$/gm, "").replace(/^export /gm, "")
     + ";({ Updater, pack7, parseRequest, parseIdentity, response })", {
-    Date: class extends Date { static now() { return now; } }, TextEncoder,
+    Date: class extends Date { static now() { return now; } }, TextEncoder, ...imported,
     setTimeout(callback, ms) { now += ms; queueMicrotask(callback); return 1; },
     clearTimeout() {},
   });
@@ -2251,9 +2260,12 @@ async function updaterIdle() {
     const dev = { link, id: { text: "FM-1_900", model: "FM-1", version: 900 } };
     const actual = new O.Updater(null);
     actual.find = async () => dev;
+    // Deadlines only: the 64-byte stand-in is no package, so the package/loader gate (test_ota.mjs) is bypassed.
+    actual.expectedLoader = async () => "ota-FM-1_900";
+    actual.requireLoader = () => {};
     const result = phase === "install"
       ? await actual.install(image, "FM-1_900").then(() => null, (e) => e)
-      : await actual.write(dev, image, () => {}).catch(() => null);
+      : await actual.write(dev, image, () => {}, "FM-1_900").catch(() => null);
     ok((phase === "install" ? result?.code === "stopped" : result?.finished === false && !result.lost)
       && link.closed && link.reads === (phase === "install" ? 9 : 181)
       && sentExactly(link, [UPGRADE]),
