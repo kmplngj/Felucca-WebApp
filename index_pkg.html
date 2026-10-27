@@ -65,6 +65,7 @@
     <p><label><span data-t="stockFile"></span><br><input id="stock-file" type="file" accept=".fwsc"></label></p>
     <p><button class="primary" id="stock-go" disabled data-t="stockGo"></button></p>
     <p class="small" data-t="stockBackup"></p>
+    <p class="small"><a href="https://github.com/kmplngj/Felucca/blob/main/docs/usb-rescue.md" target="_blank" rel="noopener" data-t="stockOther"></a></p>
     <p class="small"><label><input id="stock-recovery" type="checkbox"> <span data-t="stockRecovery"></span></label></p>
   </details>
   <progress id="bar" max="100" value="0"></progress>
@@ -93,14 +94,20 @@ const TEXT = {
     direct: "USB ケーブルはパソコンに直接つないでください。Probe や Transporter などの機材は不要です。",
     brick: "万一インストールに失敗して起動しなくなった場合は、復旧に Transporter が必要です:",
     beta: "Felucca 1.0 は実地テスト版です。不具合は GitHub で知らせてください。このカスタムファームウェアを使ったことで FM-1 が壊れたり不具合が起きたりしても、作者は一切の責任を負いません。自己責任でお使いください。",
-    back: "M-VAVEから公式FM-1 V15を取得し、未変更のFM-1.fwscを選んでください。ファイルはこのブラウザ内で検証し、サーバーへ送りません。",
-    stockTitle: "公式V15に戻す", stockFile: "公式FM-1.fwsc", stockGo: "バックアップして公式V15へ戻す",
+    back: "M-VAVEから公式FM-1ファームウェア（V15かV16）を取得し、未変更のFM-1.fwscを選んでください。ファイルはこのブラウザ内で検証し、サーバーへ送りません。",
+    stockTitle: "公式ファームウェア（V15/V16）に戻す", stockFile: "公式FM-1.fwsc", stockGo: "バックアップして公式ファームウェアへ戻す",
+    stockOther: "FM1 Open ファームウェア、m-bootloader、復旧について：Felucca の USB レスキューガイド",
     stockBackup: "現在の曲・保存曲・音色バンク・サンプル・設定を先に保存します。全体バックアップ非対応版は、Feluccaを更新してから行ってください。復元はFeluccaを再インストールしてエディタから行います。",
     stockRecovery: "更新中断の再開：全体バックアップはすでにパソコンへ保存済み",
-    stockValid: "公式V15を確認しました", stockConfirm: "全体バックアップファイルをパソコンに保存できましたか？ 続けると公式V15へ戻します。Feluccaの曲は公式V15では開けません。",
+    stockValid: "公式%sを確認しました", stockConfirm: "全体バックアップファイルをパソコンに保存できましたか？ 続けると公式ファームウェアへ戻します。Feluccaの曲は公式ファームウェアでは開けません。",
     stockNeedBackup: "書き込みモードからはバックアップできません。保存済みバックアップがある場合だけ、更新中断の再開にチェックしてください。",
     stockUnsupported: "このFeluccaは全体バックアップに未対応です。先に最新版をインストールしてください。",
     backup: "全体バックアップ保存中 ", stockError: "公式ファイルを確認できません: ",
+    stockNotOfficial: "未変更の公式FM-1 V15またはV16のファイル（FM-1.fwsc）を選んでください。",
+    stockUnpinned: "%s は M-VAVE 公式ファームウェア用の識別子です。インストールできるのは確認済みの公式ファイル（V15、V16）そのものだけで、このファイルはそのどれでもありません。",
+    stockOpenPkg: "%s は M-VAVE の FM1 Open ファームウェアのパッケージです。M-VAVE の FM1 Open 更新ツールでインストールしてください。Felucca のインストーラーではインストールしません。",
+    stockMboot: "%s は m-bootloader のインストーラーです。FM-1 のブートローダーを置き換えますが、Felucca のインストーラーはブートローダーを書き込みません。必要なら m-bootloader 自身の手順でインストールしてください。",
+    stockLayout: "この公式ファームウェアは対応していない FM-1 レイアウトです。",
     nomidi: "このブラウザでは使えません。Chrome か Edge で開いてください。", loadfail: "読み込めませんでした: ",
     start: "開始します", verify: "確認中", loader: "書き込みモードに切り替え中", write: "書き込み中",
     reboot: "再起動中", done: "完了しました", stopped: "途中で止まりました。USB を挿し直してもう一度押してください。",
@@ -109,7 +116,15 @@ const TEXT = {
     denied: "MIDI（SysEx）の使用が許可されませんでした。アドレスバーのサイト設定で MIDI を許可して、もう一度押してください。",
     notfound: "FM-1 が見つかりません。USB ケーブル（データ通信用か）を確かめ、MIDI を使う他のアプリを閉じてから、もう一度押してください。",
     model: "接続されている機器は FM-1 ではありません。",
+    open: "FM-1 は M-VAVE の FM1 Open ファームウェア（%s）で動いています。その更新機能は事前に準備されたパッケージしか受け付けず、Felucca のインストーラーはその準備を行いません。先に FM1 Open の更新ツールで公式V15に戻してから、もう一度インストールしてください。何も送信していません。",
+    badloader: "想定外の書き込みモード（%s）です。公式ファームウェアには ota-FM-1_015 が必要です。この書き込みモードには何も送信していません。書き込みモードのままなら、先に「インストール」で Felucca の書き込みを終えてください。",
     lost: "USB の接続が切れました。挿し直してもう一度押してください。",
+    badloaderMain: "想定外の書き込みモード（%s）です。Felucca には専用の書き込みモード（ota-FM-1_900）が必要です。この書き込みモードには何も送信していません。公式ファームウェアへ戻す途中で中断した M-VAVE のもの（ota-FM-1_015）なら、先にその続きを行ってください：公式FM-1.fwscを選び、「更新中断の再開」にチェックして「バックアップして公式ファームウェアへ戻す」を押します。",
+    stockStopped: "途中で止まりました。USB を挿し直して、「バックアップして公式ファームウェアへ戻す」からもう一度戻してください（書き込みモードのままなら、先に「更新中断の再開」にチェック）。「インストール」では Felucca が書き込まれます。",
+    stockLost: "USB の接続が切れました。挿し直して、「バックアップして公式ファームウェアへ戻す」からもう一度戻してください（書き込みモードのままなら、先に「更新中断の再開」にチェック）。「インストール」では Felucca が書き込まれます。",
+    stockNoloader: "書き込みモードの FM-1 が見つかりません。USB を挿し直し、「更新中断の再開」にチェックして「バックアップして公式ファームウェアへ戻す」をもう一度押してください（終わるまで書き込みモードのままです）。",
+    stockNotfound: "FM-1 が見つかりません。USB ケーブル（データ通信用か）を確かめ、MIDI を使う他のアプリを閉じてから、「バックアップして公式ファームウェアへ戻す」をもう一度押してください。",
+    stockDenied: "MIDI（SysEx）の使用が許可されませんでした。アドレスバーのサイト設定で MIDI を許可して、「バックアップして公式ファームウェアへ戻す」をもう一度押してください。",
     noloader: "書き込みモードの FM-1 が見つかりません。USB を挿し直してもう一度押してください（終わるまで書き込みモードのままです）。",
     noreturn: "FM-1 が戻ってきません。電源を入れ直してください。",
     mismatch: "書き込みは終わりましたが、FM-1 が別のバージョンを報告しています: ",
@@ -127,14 +142,20 @@ const TEXT = {
     direct: "Connect the USB cable directly to the computer. No probe or Transporter is needed.",
     brick: "If an install fails and the FM-1 no longer starts, recovering it needs a Transporter:",
     beta: "Felucca 1.0 is a field-testing release; please report problems on GitHub. The author accepts no responsibility if your FM-1 is damaged or misbehaves because of this custom firmware. Use it at your own risk.",
-    back: "Get official FM-1 V15 from M-VAVE and select the unmodified FM-1.fwsc. The browser validates it locally; it is not sent to a server.",
-    stockTitle: "Return to official V15", stockFile: "Official FM-1.fwsc", stockGo: "Back up and return to official V15",
+    back: "Get the official FM-1 firmware (V15 or V16) from M-VAVE and select the unmodified FM-1.fwsc. The browser validates it locally; it is not sent to a server.",
+    stockTitle: "Return to official firmware (V15/V16)", stockFile: "Official FM-1.fwsc", stockGo: "Back up and return to official firmware",
+    stockOther: "FM1 Open firmware, m-bootloader and recovery: Felucca's USB rescue guide",
     stockBackup: "Current music, saved music, sound banks, samples and settings are saved first. Older firmware needs a Felucca update for complete backups. To restore an archive later, reinstall Felucca and use the editor.",
     stockRecovery: "Resume an interrupted update: I already saved a complete backup to this computer",
-    stockValid: "Official V15 verified", stockConfirm: "Has the complete backup file been saved to this computer? Continue to return to official V15. Official V15 cannot open Felucca music.",
+    stockValid: "Official %s verified", stockConfirm: "Has the complete backup file been saved to this computer? Continue to return to the official firmware. The official firmware cannot open Felucca music.",
     stockNeedBackup: "An update loader cannot export a backup. Only select resume if you already saved a complete backup.",
     stockUnsupported: "This Felucca does not support complete backups. Install the current Felucca first.",
     backup: "Saving complete backup ", stockError: "Cannot validate official firmware: ",
+    stockNotOfficial: "Select the unmodified official FM-1 V15 or V16 file (FM-1.fwsc).",
+    stockUnpinned: "%s is reserved for M-VAVE's official firmware: only the exact reviewed files (V15, V16) are installed, and this is not one of them.",
+    stockOpenPkg: "%s is an M-VAVE FM1 Open firmware package: install it with M-VAVE's FM1 Open updater. Felucca's installers do not install it.",
+    stockMboot: "%s is m-bootloader's installer: it replaces the FM-1's bootloader, which Felucca's installers never write. Install m-bootloader with its own instructions if you want it.",
+    stockLayout: "The official firmware has an unsupported FM-1 layout.",
     nomidi: "This browser cannot do it. Open the page in Chrome or Edge.", loadfail: "Could not load: ",
     start: "Starting", verify: "Verifying", loader: "Switching to update mode", write: "Writing",
     reboot: "Restarting", done: "Done", stopped: "Stopped. Replug the USB cable and press Install again.",
@@ -143,7 +164,15 @@ const TEXT = {
     denied: "MIDI (SysEx) access was not allowed. Allow MIDI in the site settings (address bar) and press Install again.",
     notfound: "FM-1 not found. Check the USB cable (a data cable), close other apps that use MIDI, and press Install again.",
     model: "The connected device is not an FM-1.",
+    open: "The FM-1 runs M-VAVE's FM1 Open firmware (%s): its updater takes only a package it was armed for, which Felucca's installers do not do. Return it to the official V15 with the FM1 Open updater first, then install again. Nothing was sent.",
+    badloader: "Unexpected update loader (%s): the official firmware needs ota-FM-1_015. Nothing was sent to it. If the FM-1 stays in update mode, finish the Felucca install with Install first.",
     lost: "The USB connection was lost. Replug it and press Install again.",
+    badloaderMain: "Unexpected update loader (%s): Felucca needs its own (ota-FM-1_900). Nothing was sent to this loader. If it is M-VAVE's (ota-FM-1_015) from an interrupted return to the official firmware, finish that return first: select the official FM-1.fwsc, tick “Resume an interrupted update” and press “Back up and return to official firmware”.",
+    stockStopped: "Stopped. Replug the USB cable and return again with “Back up and return to official firmware” (if the FM-1 stays in update mode, tick “Resume an interrupted update” first). Install would write Felucca instead.",
+    stockLost: "The USB connection was lost. Replug it and return again with “Back up and return to official firmware” (if the FM-1 stays in update mode, tick “Resume an interrupted update” first). Install would write Felucca instead.",
+    stockNoloader: "The FM-1 in update mode was not found. Replug the USB cable, tick “Resume an interrupted update” and press “Back up and return to official firmware” again (it stays in update mode until it is finished).",
+    stockNotfound: "FM-1 not found. Check the USB cable (a data cable), close other apps that use MIDI, and press “Back up and return to official firmware” again.",
+    stockDenied: "MIDI (SysEx) access was not allowed. Allow MIDI in the site settings (address bar) and press “Back up and return to official firmware” again.",
     noloader: "The FM-1 in update mode was not found. Replug the USB cable and press Install again (it stays in update mode until it is finished).",
     noreturn: "The FM-1 did not come back. Power-cycle it.",
     mismatch: "Written, but the FM-1 reports another version: ",
@@ -154,16 +183,18 @@ const TEXT = {
 };
 let lang = (navigator.language || "en").toLowerCase().startsWith("ja") ? "ja" : "en";
 const t = (k) => TEXT[lang][k];
+/* a status text with its argument: in place of %s (an identity), else after the text */
+const fill = (k, arg) => t(k).includes("%s") ? t(k).replace("%s", arg) : t(k) + arg;
 let lastKey = null, lastArg = "";
 function applyLang() {
   document.documentElement.lang = lang;
   document.querySelectorAll("[data-t]").forEach((e) => { e.textContent = t(e.dataset.t); });
   $("lang").textContent = t("other");
-  if (lastKey) $("status").textContent = t(lastKey) + lastArg;
+  if (lastKey) $("status").textContent = fill(lastKey, lastArg);
 }
 $("lang").addEventListener("click", () => { lang = lang === "ja" ? "en" : "ja"; applyLang(); });
 applyLang();
-const sayK = (k, arg = "") => { lastKey = k; lastArg = arg; $("status").textContent = t(k) + arg; };
+const sayK = (k, arg = "") => { lastKey = k; lastArg = arg; $("status").textContent = fill(k, arg); };
 const say = (txt) => { lastKey = null; $("status").textContent = txt; };
 const log = (t) => { $("log").textContent += t + "\n"; };
 let image = null, pkgBytes = null, flashSize = 0;
@@ -218,13 +249,15 @@ $("go").addEventListener("click", async () => {
     if (ota) {
       ota.link.close();
       wrote = true;
-      sayK((await up.resume(image, step, meta.product)) ? "done" : "inupdate");
+      /* Felucca's loader only: M-VAVE's (an interrupted return to stock) would write this over the whole flash */
+      sayK((await up.resume(image, step, meta.product, FELUCCA_LOADER)) ? "done" : "inupdate");
     } else {
-      await up.install(image, meta.product, step);
+      await up.install(image, meta.product, step, FELUCCA_LOADER);
     }
   } catch (e) {
-    if (wrote && !(e && e.code && ["noreturn", "mismatch"].includes(e.code))) { sayK("inupdate"); log(String(e && e.stack || e)); lockInstaller(false); return; }
-    if (e && e.code && TEXT[lang][e.code]) sayK(e.code, e.detail || "");
+    if (wrote && !(e && e.code && ["noreturn", "mismatch", "badloader"].includes(e.code))) { sayK("inupdate"); log(String(e && e.stack || e)); lockInstaller(false); return; }
+    if (e && e.code === "badloader") sayK("badloaderMain", e.detail || "");
+    else if (e && e.code && TEXT[lang][e.code]) sayK(e.code, e.detail || "");
     else sayK("error", e && e.message);
     log(String(e && e.stack || e));
   }
@@ -235,11 +268,14 @@ $("stock-file").addEventListener("change", async () => {
   const epoch = ++stockFileEpoch, file = $("stock-file").files[0]; stock = null; lockInstaller(false);
   if (!file) return;
   try {
-    if (file.size !== STOCK_V15_SIZE) throw new Error("FM-1 V15 / FM-1.fwsc");
+    if (file.size > STOCK_MAX_SIZE) { sayK("stockNotOfficial"); return; }
     const verified = await validateStockPackage(new Uint8Array(await file.arrayBuffer()));
     if (epoch !== stockFileEpoch) return;
-    stock = verified; sayK("stockValid"); lockInstaller(false);
-  } catch (e) { if (epoch === stockFileEpoch) sayK("stockError", e.message); }
+    stock = verified; sayK("stockValid", verified.version); lockInstaller(false);
+  } catch (e) {
+    if (epoch !== stockFileEpoch) return;
+    if (e.code && TEXT[lang][e.code]) sayK(e.code, e.detail || ""); else sayK("stockError", e.message);
+  }
 });
 function saveArchive(archive) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(archive)], {type:"application/json"}));
@@ -266,13 +302,17 @@ function archiveInfo(a) {
   }
   return {version,supported,backupExtraCaps};
 }
+/* the return to stock's own words where the general ones say "press Install": Install writes Felucca, and through
+   M-VAVE's loader left by an interrupted return it is refused (badloaderMain) */
+const STOCK_SAY = { stopped: "stockStopped", lost: "stockLost", noloader: "stockNoloader", notfound: "stockNotfound", denied: "stockDenied" };
+const sayStock = (k, arg = "") => sayK(STOCK_SAY[k] || k, arg);
 $("stock-go").addEventListener("click", async () => {
   if (!stock || writing) return;
   const selected = stock; lockInstaller(true);
   let link = null;
   try {
     let midi;
-    try { midi = await navigator.requestMIDIAccess({sysex:true}); } catch (e) { sayK("denied"); return; }
+    try { midi = await navigator.requestMIDIAccess({sysex:true}); } catch (e) { sayStock("denied"); return; }
     const up = new Updater(midi, log);
     const step = (k, n) => { log(`${k} ${n ?? ""}`); if (["start","verify","loader","write","reboot","done"].includes(k)) sayK(k); if (k === "done") $("bar").value = 100; };
     const loader = await up.find(id => id.model === "ota-FM-1");
@@ -280,10 +320,11 @@ $("stock-go").addEventListener("click", async () => {
       loader.link.close();
       if (!$("stock-recovery").checked) { sayK("stockNeedBackup"); return; }
       if (!confirm(t("stockConfirm"))) return;
-      sayK(await up.resume(selected.image, step, selected.product) ? "done" : "stopped");
+      sayStock(await up.resume(selected.image, step, selected.product, selected.loader) ? "done" : "stopped");
     } else {
-      const device = await up.find(id => id.model === "FM-1");
-      if (!device) { sayK("notfound"); return; }
+      const device = await up.find(id => id.model === "FM-1" || id.open);
+      if (!device) { sayStock("notfound"); return; }
+      refuseOpen(device);   /* before the backup: nothing is sent to FM1 Open firmware */
       const input = device.link.input, output = device.link.output; device.link.close();
       link = new BackupConnection(input, output);
       const info = archiveInfo(await link.request([1,[]]));
@@ -292,10 +333,10 @@ $("stock-go").addEventListener("click", async () => {
         (done,total) => sayK("backup", `${Math.round(done / Math.max(1,total) * 100)}%`), { info });
       saveArchive(archive); link.close(); link = null;
       if (!confirm(t("stockConfirm") + (settingsFormat(archive) === "PER6" ? "\n\n" + PER6_WARNING : ""))) return;
-      await up.install(selected.image, selected.product, step);
+      await up.install(selected.image, selected.product, step, selected.loader);
     }
   } catch (e) {
-    if (e.code && TEXT[lang][e.code]) sayK(e.code,e.detail || ""); else sayK("error",e.message);
+    if (e.code && TEXT[lang][e.code]) sayStock(e.code,e.detail || ""); else sayK("error",e.message);
     log(String(e.stack || e));
   } finally { if (link) link.close(); lockInstaller(false); }
 });

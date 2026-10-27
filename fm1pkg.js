@@ -15,6 +15,27 @@ const BLOCKS = 20, BLK = 0x30, KEEP = 0x2F;
 export const STOCK_V15_SHA256 = "db1642b2b6fa5c2cccb11ffd13878068bb28601678d3644049f99dc40e7edb8a";
 export const STOCK_APP_SIZE = 0x8DFBC;
 export const STOCK_V15_SIZE = 699956;
+// M-VAVE's unmodified official FM-1 firmware files (FM-1.fwsc), reviewed for a return to stock (Felucca #619):
+// the exact files only, as tools/fm1_install.py STOCK_SHA256 and firmware/src/ota.c OTA_STOCK pin them. An
+// FM-1_0NN identity alone is no evidence: modified packages reuse FM-1_016. Both files carry the same update
+// loader (STOCK_OTA: its ota.bin size and heads), which answers the handshake with STOCK_LOADER.
+export const STOCK_PINS = {
+  "FM-1_015": { version: "V15", size: STOCK_V15_SIZE, sha256: STOCK_V15_SHA256,
+    flashSize: 0x93000, appOff: 16672, appSize: STOCK_APP_SIZE },
+  "FM-1_016": { version: "V16", size: 718196, sha256: "d017fb65e70aca97ee29d944470c3515a74581df5c0576bf70de917c7b2b61d5",
+    flashSize: 0xA9000, appOff: 16704, appSize: 597928 },
+};
+export const STOCK_LOADER = "ota-FM-1_015";
+// Felucca's own update loader (tools/fm1_install.py LOADER_FAMILIES "felucca-v1"): the only one a Felucca package is
+// written through, resumed or newly staged; M-VAVE's (STOCK_LOADER) would write it over the whole flash
+export const FELUCCA_LOADER = "ota-FM-1_900";
+const STOCK_OTA = { size: 19969, hcrc: 0xEBAA, dcrc: 0x5881, len: 0x4DE1 };
+export const STOCK_MAX_SIZE = 0x200000;   // a larger file is refused before it is read (fm1_install.py MAX_PKG)
+const STOCK_RE = /^FM-1_0\d\d$/;           // M-VAVE's identities (M-UPGRADE versions): pinned files only
+const MBOOT_PRODUCT = "FM-1_099";          // m-bootloader's installer (jvitkauskas/m-bootloader)
+// M-VAVE's FM1 Open firmware, as a package and on the device (fm1ota.js): its updater takes only a package
+// it was armed for first, which Felucca's installers do not do
+export const OPEN_RE = /^(?:FM1_OFFICIAL_OPEN|FM1_COMMUNITY_\d+|FM-1_8\d{6})$/;
 
 const T = new Uint16Array(256);
 for (let i = 0; i < 256; i++) {
@@ -239,17 +260,34 @@ export async function sha256hex(bytes) {
   return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-// Only the user's unmodified official V15 is accepted for a return to stock.
-// The digest pins every file, loader and flash layout; filenames are not evidence.
+// errors carry a code the installer page translates (detail: the package identity), as fm1ota.js does
+function refuse(code, msg, detail = "") { const e = new Error(msg); e.code = code; e.detail = detail; return e; }
+
+// Only one of the user's unmodified official files (STOCK_PINS) is accepted for a return to stock.
+// The digest pins every file, loader and flash layout; filenames and identities are not evidence.
 export async function validateStockPackage(bytes) {
-  if (bytes.length !== STOCK_V15_SIZE || await sha256hex(bytes) !== STOCK_V15_SHA256)
-    throw new Error("Select the unmodified official FM-1 V15 file (FM-1.fwsc).");
+  const product = productOf(bytes);
+  if (OPEN_RE.test(product))
+    throw refuse("stockOpenPkg", `${product} is an M-VAVE FM1 Open firmware package: install it with M-VAVE's ` +
+      "FM1 Open updater. Felucca's installers do not install it.", product);
+  if (product === MBOOT_PRODUCT)
+    throw refuse("stockMboot", `${product} is m-bootloader's installer: it replaces the FM-1's bootloader, which ` +
+      "Felucca's installers never write. Install m-bootloader with its own instructions if you want it.", product);
+  const pin = STOCK_PINS[product];
+  if (!pin || bytes.length !== pin.size || await sha256hex(bytes) !== pin.sha256) {
+    if (STOCK_RE.test(product))
+      throw refuse("stockUnpinned", `${product} is reserved for M-VAVE's official firmware: only the exact reviewed ` +
+        `files (${Object.values(STOCK_PINS).map((p) => p.version).join(", ")}) are installed, and this is not one of them.`, product);
+    throw refuse("stockNotOfficial", "Select the unmodified official FM-1 V15 or V16 file (FM-1.fwsc).");
+  }
   const pkg = new Package(bytes);
-  if (pkg.product !== "FM-1_015" || pkg.flashFileOff !== 1044 || pkg.flashSize !== 602112 ||
-      pkg.appBase !== 16384 || pkg.appOff !== 16672 || pkg.app.size !== STOCK_APP_SIZE ||
-      !pkg.entries.some((e) => e.type === 100 && e.name === "ota.bin" && e.size === 19969))
-    throw new Error("The official firmware has an unsupported FM-1 layout.");
-  return { product: pkg.product, image: logicalImage(bytes), sha256: STOCK_V15_SHA256 };
+  const ota = pkg.entries.find((e) => e.type === 100 && e.name === "ota.bin");
+  const head = ota && bytes.subarray(ota.dataOff + pkg.skew, ota.dataOff + pkg.skew + 32);
+  if (pkg.flashFileOff !== 1044 || pkg.flashSize !== pin.flashSize || pkg.appBase !== 16384 ||
+      pkg.appOff !== pin.appOff || pkg.app.size !== pin.appSize || !ota || ota.size !== STOCK_OTA.size ||
+      u16(head, 0) !== STOCK_OTA.hcrc || u16(head, 2) !== STOCK_OTA.dcrc || u32(head, 8) !== STOCK_OTA.len)
+    throw refuse("stockLayout", "The official firmware has an unsupported FM-1 layout.");
+  return { product, version: pin.version, image: logicalImage(bytes), sha256: pin.sha256, loader: STOCK_LOADER };
 }
 
 // official V15 + Felucca app -> installable package (Uint8Array)
