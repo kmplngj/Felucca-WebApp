@@ -2151,6 +2151,115 @@ class FakeFM1 {
   }
 }
 
+async function updaterIdle() {
+  // Only this production-module VM owns fake time. Other protocol tests retain
+  // real timers; only export keywords are removed from the actual updater source.
+  let now = 0;
+  const source = readFileSync(join(HERE, "fm1ota.js"), "utf8");
+  const O = vm.runInNewContext(source.replace(/^export /gm, "")
+    + ";({ Updater, pack7, parseRequest, parseIdentity, response })", {
+    Date: class extends Date { static now() { return now; } }, TextEncoder,
+    setTimeout(callback, ms) { now += ms; queueMicrotask(callback); return 1; },
+    clearTimeout() {},
+  });
+  class Stream {
+    constructor({ packets = [], tail = [0xF0, 1, 0xF7], lostAt = Infinity, limit = 256 } = {}) {
+      this.packets = [...packets]; this.tail = tail; this.lostAt = lostAt; this.limit = limit;
+      this.reads = 0; this.sent = []; this.closed = false;
+    }
+    get lost() { return now >= this.lostAt; }
+    async read(timeout) {
+      if (++this.reads > this.limit) throw new Error("no-progress stream exhausted its finite read oracle");
+      now += Math.min(timeout, 1000);
+      return this.packets.length ? this.packets.shift() : this.tail;
+    }
+    send(packet) { this.sent.push(Array.from(packet)); return true; }
+    close() { this.closed = true; }
+  }
+  const request = (addr, len, flags = 0) => {
+    const body = [0, 0x59, 0x30, 8, 0, 0, flags,
+      addr & 255, (addr >>> 8) & 255, (addr >>> 16) & 255, (addr >>> 24) & 255,
+      len & 255, (len >>> 8) & 255, (len >>> 16) & 255];
+    body.push(~body.slice(6).reduce((sum, b) => sum + b, 0) & 255);
+    return [0xF0, ...O.pack7(body), 0xF7];
+  };
+  const identity = [0xF0, ...O.pack7([0, 0x59, 0x11, 0, 0, 0,
+    ...new TextEncoder().encode("FM-1_900"), ...new Array(20).fill(0)]), 0xF7];
+  const bad = request(0, 4);
+  bad[bad.length - 2] ^= 1;
+  const invalid = [[0xF0, 1, 0xF7], identity, bad];
+  const image = Uint8Array.from({ length: 64 }, (_, i) => i);
+  const updater = new O.Updater(null);
+  const serve = (link, finish = 0xE0000000, progress) =>
+    updater.serve(link, image, finish, 4000, progress).catch(() => null);
+  const sentExactly = (link, expected) => link.sent.length === expected.length
+    && expected.every((packet, i) => eq(link.sent[i], packet));
+  ok(O.parseIdentity(identity)?.text === "FM-1_900" && invalid.every((packet) => !O.parseRequest(packet)),
+    "ota idle: truncated, identity and bad-checksum fixtures are not requests");
+
+  for (const [i, tail] of invalid.entries()) {
+    now = 0;
+    const link = new Stream({ tail });
+    const result = await serve(link);
+    ok(result?.served === 0 && result.finished === false && !result.lost
+      && link.reads === 5 && now === 5000 && !link.sent.length,
+    `ota idle: continuous non-request SysEx ${i} reaches the existing strict deadline`);
+  }
+  now = 0;
+  const progressed = new Stream({ packets: [request(0, 4, 3), ...invalid] });
+  const progress = [];
+  const stopped = await serve(progressed, 0xF0000000, (n, addr) => progress.push([n, addr]));
+  // The existing 10 ms reply sleep puts read five 4010 ms after the valid request.
+  ok(stopped?.served === 1 && stopped.finished === false && !stopped.lost
+    && progressed.reads === 5 && now === 5010
+    && sentExactly(progressed, [O.response(0, image.slice(0, 4), 3)])
+    && JSON.stringify(progress) === "[[1,0]]",
+  "ota idle: non-request traffic after progress cannot extend its renewed deadline");
+
+  now = 0;
+  const lost = new Stream({ lostAt: 3000 });
+  const disconnected = await serve(lost);
+  ok(disconnected?.served === 0 && disconnected.finished === false && disconnected.lost === true
+    && lost.reads === 3 && !lost.sent.length,
+  "ota idle: queued non-request traffic cannot hide a disconnected port");
+
+  // Total transfer time exceeds idle; regularly arriving valid requests keep it
+  // alive, including the other phase's finish acknowledgment and final finish.
+  now = 0;
+  const packets = [], expected = [], expectedProgress = [];
+  for (let i = 0; i < 32; i++) {
+    const addr = i % 16 * 4;
+    packets.push(request(addr, 4, 2), invalid[0], invalid[1]);
+    expected.push(O.response(addr, image.slice(addr, addr + 4), 2));
+    expectedProgress.push([i + 1, addr]);
+  }
+  packets.push(request(0xE0000000, 8), request(0xF0000000, 8));
+  for (const addr of [0xE0000000, 0xF0000000]) {
+    expected.push(O.response(addr, [...new TextEncoder().encode("success"), 0]));
+  }
+  const long = new Stream({ packets });
+  const longProgress = [];
+  const finished = await serve(long, 0xF0000000, (n, addr) => longProgress.push([n, addr]));
+  ok(finished?.served === 32 && finished.finished === true && !finished.lost && now === 98320
+    && sentExactly(long, expected) && JSON.stringify(longProgress) === JSON.stringify(expectedProgress),
+  "ota idle: valid requests sustain long transfers and retain both exact finish responses");
+
+  for (const phase of ["install", "write"]) {
+    now = 0;
+    const link = new Stream();
+    const dev = { link, id: { text: "FM-1_900", model: "FM-1", version: 900 } };
+    const actual = new O.Updater(null);
+    actual.find = async () => dev;
+    const result = phase === "install"
+      ? await actual.install(image, "FM-1_900").then(() => null, (e) => e)
+      : await actual.write(dev, image, () => {}).catch(() => null);
+    ok((phase === "install" ? result?.code === "stopped" : result?.finished === false && !result.lost)
+      && link.closed && link.reads === (phase === "install" ? 9 : 181)
+      && sentExactly(link, [UPGRADE]),
+    `ota idle: actual ${phase} retains its default deadline, result and link cleanup`);
+  }
+}
+
 async function updater() {
   const image = Uint8Array.from({ length: 0x2000 }, (_, i) => (i * 7) & 0xFF);
   const dev = new FakeFM1(image);
@@ -2196,6 +2305,7 @@ editorTabs();
 editorIcons();
 samplesMatch();
 await packages();
+await updaterIdle();
 await updater();
 console.log(failed ? `WEB TESTS FAILED (${failed})` : "web tests passed");
 process.exit(failed ? 1 : 0);
