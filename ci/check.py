@@ -24,6 +24,10 @@ PROBE_TIMEOUT = 30
 LOCKED_RUNNER_TIMEOUT = 18 * 60
 INTERTIGHT_SHA256 = "b81b73dcb64df3c230cabade7df6c5773bf863233f24c9ee51087519f1f88b6f"
 PACKAGE_SKIP = "packages: skipped (needs FM-1_v15.fwsc and a felucca/build.py build)"
+# Felucca#619 stock-return checks: the official files are private, and pin parity needs a firmware pin with
+# the #619 installer (tools/fm1_install.py STOCK_SHA256). Each skip is allowed only while that holds.
+STOCK_FILE_SKIPS = {f"stock: FM-1_v{v}.fwsc: skipped (not in FELUCCA_STOCK)" for v in ("15", "16")}
+STOCK_PIN_SKIP = "stock pins vs fm1_install.py: skipped (needs FELUCCA_TOOLS with the #619 installer)"
 CLASSIC_SKIPS = {
     "editor: MENU settings (this editor has none)",
     "FM6 bank: (editor.html has no voice bank sender)",
@@ -61,12 +65,23 @@ def output(*cmd, cwd=ROOT):
     return done.stdout.rstrip()
 
 
-def unexpected_skips(text, suite):
+def unexpected_skips(text, suite, *, stock_requested=False, stock_pins=True):
     skips = [line.strip() for line in text.splitlines()
              if line.rstrip().endswith(" skip") or ": skipped (" in line]
     allowed = {PACKAGE_SKIP} if suite in ("classic", "app-protocol") else set()
+    if suite in ("classic", "app-protocol"):
+        if not stock_requested:
+            allowed |= STOCK_FILE_SKIPS
+        if not stock_pins:
+            allowed.add(STOCK_PIN_SKIP)
     return skips, [line for line in skips if line not in allowed and not (
         suite == "classic" and line.removesuffix("skip").strip() in CLASSIC_SKIPS)]
+
+
+def stock_pins_available(firmware):
+    """the pinned firmware's installer carries the #619 stock pins test_web.mjs compares against"""
+    installer = Path(firmware) / "tools/fm1_install.py"
+    return installer.is_file() and "STOCK_SHA256" in installer.read_text(errors="replace")
 
 
 def firmware_pin(override):
@@ -218,7 +233,8 @@ def main():
             else:
                 done = subprocess.run(command, cwd=cwd, env=process_env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         text = log_path.read_text()
-        skips, unexpected = unexpected_skips(text, name)
+        skips, unexpected = unexpected_skips(text, name, stock_requested=bool(process_env.get("FELUCCA_STOCK")),
+                                             stock_pins=stock_pins_available(firmware))
         results["checks"].append({"name": name, "command": command, "cwd": str(cwd), "exit": done.returncode,
                                   "seconds": round(time.monotonic() - start, 2),
                                   "skips": skips, "log": log_path.name})

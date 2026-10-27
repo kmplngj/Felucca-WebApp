@@ -12,7 +12,8 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
-from check import firmware_environment, font_input, owned_run
+from check import (STOCK_FILE_SKIPS, STOCK_PIN_SKIP, firmware_environment, font_input, owned_run,
+                   stock_pins_available, unexpected_skips)
 
 
 class FontInput(unittest.TestCase):
@@ -283,6 +284,39 @@ class AttemptSummary(unittest.TestCase):
             self.assertEqual(isolated[key], client[key])
         self.assertEqual(client["GITHUB_REPOSITORY"], "kmplngj/Felucca-WebApp")
         self.assertEqual(client["GITHUB_SHA"], "b" * 40)
+
+
+class StockSkips(unittest.TestCase):
+    """Felucca#619: private official files and a pre-#619 firmware pin are the only accepted stock skips"""
+    LOG = "\n".join([STOCK_PIN_SKIP, *sorted(STOCK_FILE_SKIPS)])
+
+    def test_private_files_and_pre_619_pin_are_documented(self):
+        for suite in ("classic", "app-protocol"):
+            skips, unexpected = unexpected_skips(self.LOG, suite, stock_pins=False)
+            self.assertEqual(len(skips), 3)
+            self.assertEqual(unexpected, [])
+
+    def test_pin_parity_skip_fails_once_the_pin_has_the_installer(self):
+        _, unexpected = unexpected_skips(self.LOG, "classic", stock_pins=True)
+        self.assertEqual(unexpected, [STOCK_PIN_SKIP])
+
+    def test_requested_stock_files_must_not_skip(self):
+        _, unexpected = unexpected_skips(self.LOG, "classic", stock_requested=True, stock_pins=False)
+        self.assertEqual(sorted(unexpected), sorted(STOCK_FILE_SKIPS))
+
+    def test_other_suites_accept_none(self):
+        _, unexpected = unexpected_skips(self.LOG, "backup", stock_pins=False)
+        self.assertEqual(len(unexpected), 3)
+
+    def test_installer_detection(self):
+        with tempfile.TemporaryDirectory(prefix="felucca-stock-pins-") as temp:
+            root = Path(temp)
+            self.assertFalse(stock_pins_available(root))
+            (root / "tools").mkdir()
+            (root / "tools/fm1_install.py").write_text("PRODUCTS = {}\n")
+            self.assertFalse(stock_pins_available(root))
+            (root / "tools/fm1_install.py").write_text("STOCK_SHA256 = {}\n")
+            self.assertTrue(stock_pins_available(root))
 
 
 if __name__ == "__main__":
