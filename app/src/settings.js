@@ -12,7 +12,7 @@ import { MENU_ICON, MENU_TAB_ICON } from "./paramicons.js";
 import { knownLayout } from "./device.js";
 import { LANGS, getLang, setLang, t } from "./text.js";
 import { midiLearn } from "./proto.js";
-import { BUILTIN, ROLES, derive, fromHex, hex, unreadable } from "./palette.js";
+import { BUILTIN, ROLES, derive, fromHex, hex, contrastWarnings, contrastLabel } from "./palette.js";
 
 /* the site has the emulator beside the editor (make_site.py --try) */
 /* (content "1": the release's emulator; "next": a preview of the next version) */
@@ -64,7 +64,8 @@ export function settingsScreen(root, ui) {
      the rows in id order; 1.0.4: one card); COLOR when the display card does not already show the theme */
   function menu() {
     /* (1.4's MIDI IN 21 and TUNE 22 are the project's ROUT and TUNE, shown with the globals above: once) */
-    const items = (dev.menu || []).filter((m) => !(m.id === 0 && dev.preferences && dev.preferences.state.caps & 1) && !(dev.dump && (m.id === 21 || m.id === 22)));
+    /* Tagged INFO bits 4/5 independently retire the native size/style choices; keep its descriptor and stored value. */
+    const items = (dev.menu || []).filter((m) => !(m.id === 2 && dev.info.uiCaps & 16) && !(m.id === 1 && dev.info.uiCaps & 32) && !(m.id === 0 && dev.preferences && dev.preferences.state.caps & 1) && !(dev.dump && (m.id === 21 || m.id === 22)));
     if (!items.length) return [];
     const tabs = [...new Set(items.map((m) => m.tab))].sort((x, y) => x - y);
     return tabs.map((tab) => {
@@ -136,7 +137,7 @@ export function settingsScreen(root, ui) {
   /* CUSTOM, the user's palette (1.6, INFO 45 01 5): five colours (BG SURF TEXT THEME ACCENT), shown on the device as they
      change (op 0: RAM only), stored with SAVE (op 1: the palette in use from then on, saved with the settings), gone with
      REMOVE. The sample is what the device derives from them (palette.js, the port of gfx.c); colours that are hard to read (the
-     rule in proto.js) get a warning, nothing more: they are shown and saved as chosen (REMOVE and COLOR are the way back) */
+     derived text/graphics contrast) get a warning, nothing more: they are shown and saved as chosen (REMOVE and COLOR are the way back) */
   function paletteCard() {
     if (!dev.info.customPalette || !dev.palette) return null;
     const P = dev.palette;
@@ -146,14 +147,18 @@ export function settingsScreen(root, ui) {
       el("div", { class: "pd-card" }, el("b", { class: "pd-text", text: "FELUCCA" }), el("span", { class: "pd-mid", text: "TRACK 1 · 120 BPM" }),
         el("div", { class: "pd-row" }, el("span", { class: "pd-sel", text: "SELECT" }), el("span", { class: "pd-theme", text: "THEME" }), el("span", { class: "pd-acc", text: "●" }), el("span", { class: "pd-rec", text: "REC" })),
         el("div", { class: "pd-keys" }, ...[0, 1, 2, 3, 4, 5].map(() => el("i", { class: "pd-key" })))));
-    const warn = el("p", { class: "palwarn", role: "status" });
+    const warn = el("div", { class: "palwarn", role: "status", "aria-atomic": "true" });
     const say = (rc) => ui.prefResult(rc);
-    const names = (u) => u.map((x) => `${x.a} / ${x.b}`).join(", ");
     function paint() {
       const d = derive(c), css = (x) => hex(x);
       demo.style.cssText = `--pbg:${css(d.bg)};--psurf:${css(d.surf)};--ptext:${css(d.text)};--ptheme:${css(d.theme)};--pacc:${css(d.accent)};--pmid:${css(d.mid)};--pdim:${css(d.dim)};--psel:${css(d.sel)};--pink:${css(d.ink)};--prec:${css(d.rec)};--pkey:${css(d.key)};--praise:${css(d.raise)};`;
-      const u = unreadable(c);
-      warn.textContent = u.length ? `${t("paletteHard")}: ${names(u)}` : "";
+      const u = contrastWarnings(c);
+      warn.replaceChildren(...(u.length ? [el("p", { text: t("paletteContrast") }),
+        ...[["text", "paletteTextContrast"], ["graphics", "paletteGraphicsContrast"]].flatMap(([kind, label]) => {
+          const rows = u.filter((x) => x.kind === kind);
+          return rows.length ? [el("p", { text: t(label) }), el("ul", {}, ...rows.map((x) =>
+            el("li", { text: `${x.a.toUpperCase()} / ${x.b.toUpperCase()}: ${contrastLabel(x.ratio)}` })))] : [];
+        })] : []));
       warn.hidden = !u.length;
       inputs.forEach((e, i) => { e.value = hex(c[i]); });
     }

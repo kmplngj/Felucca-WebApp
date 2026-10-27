@@ -123,11 +123,21 @@ function go(name) {
   for (const s of $$(".screen")) s.hidden = s.id !== "s-" + name;
   store.set(PLACE_KEY, name);
 }
+let settingsRead = null;
+function readSettings(d) {
+  if (!d || dev !== d || !inSettings || !d.loaded || d.closed || (settingsRead && settingsRead.dev === d)) return;
+  const pending = { dev: d };
+  settingsRead = pending;
+  /* Optional cards are read on entry, or when an already-open Settings reaches a loaded session. */
+  d.readMenu().catch((e) => {
+    if (dev === d && !d.closed) sayK("error", e.message);
+  }).finally(() => { if (settingsRead === pending) settingsRead = null; });
+}
 function openSettings(on) {
   inSettings = on;
   $("#settings").setAttribute("aria-pressed", String(on));
   if (!on) return go(place);
-  if (dev && dev.loaded) dev.readMenu();             /* (not pushed: read as settings open) */
+  readSettings(dev);                               /* (not pushed: read as settings open) */
   for (const b of $$(".place")) b.setAttribute("aria-selected", "false");
   for (const s of $$(".screen")) s.hidden = s.id !== "s-settings";
 }
@@ -222,7 +232,7 @@ async function connect() {
   try {
     if (!access) {
       if (MOCK) access = makeMockDevice({ legacy: QS.get("legacy") === "1", catalog: QS.get("catalog") === "1" || QS.get("raw") === "1", test14: QS.get("test14") === "1", omit: QS.has("omit") ? Number(QS.get("omit")) : undefined,
-        rawStore: QS.get("raw") === "1" }).access;   /* (&raw=1: the raw store export of #456, with demo legacy objects) */
+        rawStore: QS.get("raw") === "1", noUnifiedUI: QS.get("noUnifiedUI") === "1", graph: QS.get("graph") === "1", uiCaps: QS.get("graph") === "1" ? 57 : undefined }).access;   /* (&raw=1: the raw store export of #456, with demo legacy objects) */
       else if (!navigator.requestMIDIAccess) { sayK("nomidi"); return; }
       else { try { access = await navigator.requestMIDIAccess({ sysex: true }); } catch { sayK("denied"); return; } }
       access.onstatechange = onPortState;
@@ -260,8 +270,10 @@ async function connect() {
     await d.open();
     if (dev !== d) return;
     await lib.adopt(d);
+    if (dev !== d) return;
     offer(d);
     renderAll();
+    readSettings(d);
     sayK("ready", d.info.version);
   } catch (e) {
     const d = dev;
