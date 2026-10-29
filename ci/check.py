@@ -24,6 +24,7 @@ PROBE_TIMEOUT = 30
 LOCKED_RUNNER_TIMEOUT = 18 * 60
 INTERTIGHT_SHA256 = "b81b73dcb64df3c230cabade7df6c5773bf863233f24c9ee51087519f1f88b6f"
 PACKAGE_SKIP = "packages: skipped (needs FM-1_v15.fwsc and a felucca/build.py build)"
+CODEC_HEADER_SKIP = "native codec headers: skipped (set FELUCCA_CODEC_ROOT to the pinned PR594 checkout)"
 CLASSIC_SKIPS = {
     "editor: MENU settings (this editor has none)",
     "FM6 bank: (editor.html has no voice bank sender)",
@@ -65,6 +66,9 @@ def unexpected_skips(text, suite):
     skips = [line.strip() for line in text.splitlines()
              if line.rstrip().endswith(" skip") or ": skipped (" in line]
     allowed = {PACKAGE_SKIP} if suite in ("classic", "app-protocol") else set()
+    if suite == "legacy":
+        # Ordinary CI uses the released/pinned native reference, not the unmerged PR594 codec oracle.
+        allowed.add(CODEC_HEADER_SKIP)
     return skips, [line for line in skips if line not in allowed and not (
         suite == "classic" and line.removesuffix("skip").strip() in CLASSIC_SKIPS)]
 

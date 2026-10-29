@@ -12,7 +12,36 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
-from check import firmware_environment, font_input, owned_run
+from check import firmware_environment, font_input, owned_run, unexpected_skips
+
+
+class SkipPolicy(unittest.TestCase):
+    CODEC_SKIP = "native codec headers: skipped (set FELUCCA_CODEC_ROOT to the pinned PR594 checkout)"
+
+    def test_optional_codec_oracle_skip_is_retained_in_legacy_receipt(self):
+        log = "vectors: all ok\n" + self.CODEC_SKIP + "\nall ok\n"
+        self.assertEqual(unexpected_skips(log, "legacy"), ([self.CODEC_SKIP], []))
+
+    def test_codec_skip_is_not_allowed_in_other_suites(self):
+        for suite in ("classic", "app-protocol", "app", "catalog", "runner-regressions", "unknown"):
+            with self.subTest(suite=suite):
+                self.assertEqual(unexpected_skips(self.CODEC_SKIP, suite), ([self.CODEC_SKIP], [self.CODEC_SKIP]))
+
+    def test_new_or_changed_legacy_skips_still_fail(self):
+        for unknown in ("native firmware: skipped (set FELUCCA_ROOT to a built firmware checkout)",
+                        "native codec headers: skipped (oracle compilation failed)",
+                        self.CODEC_SKIP + " extra", "new validation: skipped (unavailable)",
+                        "unexpected comparison skip"):
+            with self.subTest(unknown=unknown):
+                self.assertEqual(unexpected_skips(self.CODEC_SKIP + "\n" + unknown, "legacy"),
+                                 ([self.CODEC_SKIP, unknown], [unknown]))
+
+    def test_existing_package_skip_remains_protocol_only(self):
+        line = "packages: skipped (needs FM-1_v15.fwsc and a felucca/build.py build)"
+        for suite in ("classic", "app-protocol", "legacy", "app", "unknown"):
+            with self.subTest(suite=suite):
+                self.assertEqual(unexpected_skips(line, suite),
+                                 ([line], [] if suite in ("classic", "app-protocol") else [line]))
 
 
 class FontInput(unittest.TestCase):
