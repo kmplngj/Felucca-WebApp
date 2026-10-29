@@ -257,6 +257,17 @@ class AttemptSummary(unittest.TestCase):
         self.run_gate("--firmware", str(firmware), env={**env, "FELUCCA_INTERTIGHT": "chosen-font.ttf"})
         self.assertEqual(json.loads(marker.read_text()), str((self.root / "chosen-font.ttf").resolve()))
 
+    def test_stock_folder_reaches_locked_runner(self):
+        # A supplied FELUCCA_STOCK must survive the FELUCCA_* reset: stock-file skips are then unexpected, not documented.
+        firmware, revision = self.firmware_checkout()
+        self.pin.write_text(json.dumps({"repository": "kmplngj/Felucca", "revision": revision}))
+        marker = Path(self.temp.name) / "stock.json"
+        env = self.fake_tool("uv", "import os,json\nfrom pathlib import Path\n"
+                             f"Path({str(marker)!r}).write_text(json.dumps(os.environ.get('FELUCCA_STOCK')))\n"
+                             "raise SystemExit(73)\n")
+        self.run_gate("--firmware", str(firmware), env={**env, "FELUCCA_STOCK": "private-stock"})
+        self.assertEqual(json.loads(marker.read_text()), str((self.root / "private-stock").resolve()))
+
     def test_missing_font_replaces_previous_green_without_skip(self):
         firmware, revision = self.firmware_checkout()
         self.git_checkout(self.root)
@@ -274,6 +285,17 @@ class AttemptSummary(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout.strip(), "1" * 40)
         self.assertFalse((self.root / "build").exists())
+
+    def test_requested_stock_fixture_reaches_locked_runner(self):
+        firmware, revision = self.firmware_checkout()
+        self.pin.write_text(json.dumps({"repository": "kmplngj/Felucca", "revision": revision}))
+        observed = Path(self.temp.name) / "stock-env"
+        env = self.fake_tool("uv", "import os\nfrom pathlib import Path\n"
+                             f"Path({str(observed)!r}).write_text(os.environ.get('FELUCCA_STOCK', 'absent'))\n"
+                             "raise SystemExit(73)\n")
+        completed = self.run_gate("--firmware", str(firmware), env={**env, "FELUCCA_STOCK": "official.fwsc"})
+        self.assert_failed_attempt(completed, "locked runner exited 73")
+        self.assertEqual(observed.read_text(), str((self.root / "official.fwsc").resolve()))
 
     def test_missing_compiler_records_original_startup_cause(self):
         firmware, revision = self.firmware_checkout()
@@ -312,6 +334,22 @@ class AttemptSummary(unittest.TestCase):
             self.assertEqual(isolated[key], client[key])
         self.assertEqual(client["GITHUB_REPOSITORY"], "kmplngj/Felucca-WebApp")
         self.assertEqual(client["GITHUB_SHA"], "b" * 40)
+
+
+class StockSkips(unittest.TestCase):
+    def test_only_optional_private_files_may_skip(self):
+        from check import STOCK_FILE_SKIPS
+        for suite in ("classic", "app-protocol"):
+            for line in STOCK_FILE_SKIPS:
+                self.assertEqual(unexpected_skips(line, suite), ([line], []))
+                self.assertEqual(unexpected_skips(line, suite, stock_requested=True), ([line], [line]))
+        for line in STOCK_FILE_SKIPS:
+            self.assertEqual(unexpected_skips(line, "legacy"), ([line], [line]))
+
+    def test_native_pin_parity_is_always_required(self):
+        line = "stock pins vs fm1_install.py: skipped (needs FELUCCA_TOOLS with the #619 installer)"
+        for suite in ("classic", "app-protocol", "ota"):
+            self.assertEqual(unexpected_skips(line, suite), ([line], [line]))
 
 
 if __name__ == "__main__":

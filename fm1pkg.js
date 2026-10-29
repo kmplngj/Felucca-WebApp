@@ -15,6 +15,27 @@ const BLOCKS = 20, BLK = 0x30, KEEP = 0x2F;
 export const STOCK_V15_SHA256 = "db1642b2b6fa5c2cccb11ffd13878068bb28601678d3644049f99dc40e7edb8a";
 export const STOCK_APP_SIZE = 0x8DFBC;
 export const STOCK_V15_SIZE = 699956;
+// M-VAVE's unmodified official FM-1 firmware files (FM-1.fwsc), reviewed for a return to stock (Felucca #619):
+// the exact files only, as tools/fm1_install.py STOCK_SHA256 and firmware/src/ota.c OTA_STOCK pin them. An
+// FM-1_0NN identity alone is no evidence: modified packages reuse FM-1_016. Both files carry the same update
+// loader (STOCK_OTA: its ota.bin size and heads), which answers the handshake with STOCK_LOADER.
+export const STOCK_PINS = {
+  "FM-1_015": { version: "V15", size: STOCK_V15_SIZE, sha256: STOCK_V15_SHA256,
+    flashSize: 0x93000, appOff: 16672, appSize: STOCK_APP_SIZE },
+  "FM-1_016": { version: "V16", size: 718196, sha256: "d017fb65e70aca97ee29d944470c3515a74581df5c0576bf70de917c7b2b61d5",
+    flashSize: 0xA9000, appOff: 16704, appSize: 597928 },
+};
+export const STOCK_LOADER = "ota-FM-1_015";
+// Felucca's own update loader (tools/fm1_install.py LOADER_FAMILIES "felucca-v1"): the only one a Felucca package is
+// written through, resumed or newly staged; M-VAVE's (STOCK_LOADER) would write it over the whole flash
+export const FELUCCA_LOADER = "ota-FM-1_900";
+const STOCK_OTA = { size: 19969, hcrc: 0xEBAA, dcrc: 0x5881, len: 0x4DE1 };
+export const STOCK_MAX_SIZE = 0x200000;   // a larger file is refused before it is read (fm1_install.py MAX_PKG)
+const STOCK_RE = /^FM-1_0\d\d$/;           // M-VAVE's identities (M-UPGRADE versions): pinned files only
+const MBOOT_PRODUCT = "FM-1_099";          // m-bootloader's installer (jvitkauskas/m-bootloader)
+// M-VAVE's FM1 Open firmware, as a package and on the device (fm1ota.js): its updater takes only a package
+// it was armed for first, which Felucca's installers do not do
+export const OPEN_RE = /^(?:FM1_OFFICIAL_OPEN|FM1_COMMUNITY_\d+|FM-1_8\d{6})$/;
 
 const T = new Uint16Array(256);
 for (let i = 0; i < 256; i++) {
@@ -239,17 +260,35 @@ export async function sha256hex(bytes) {
   return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-// Only the user's unmodified official V15 is accepted for a return to stock.
-// The digest pins every file, loader and flash layout; filenames are not evidence.
+// errors carry a code the installer page translates (detail: the package identity), as fm1ota.js does
+function refuse(code, msg, detail = "") { const e = new Error(msg); e.code = code; e.detail = detail; return e; }
+
+// Only one of the user's unmodified official files (STOCK_PINS) is accepted for a return to stock.
+// The digest pins every file, loader and flash layout; filenames and identities are not evidence.
 export async function validateStockPackage(bytes) {
-  if (bytes.length !== STOCK_V15_SIZE || await sha256hex(bytes) !== STOCK_V15_SHA256)
-    throw new Error("Select the unmodified official FM-1 V15 file (FM-1.fwsc).");
+  bytes = new Uint8Array(bytes); // snapshot before the first digest await, including Buffers/subclasses
+  const product = productOf(bytes);
+  if (OPEN_RE.test(product))
+    throw refuse("stockOpenPkg", `${product} is an M-VAVE FM1 Open firmware package: install it with M-VAVE's ` +
+      "FM1 Open updater. Felucca's installers do not install it.", product);
+  if (product === MBOOT_PRODUCT)
+    throw refuse("stockMboot", `${product} is m-bootloader's installer: it replaces the FM-1's bootloader, which ` +
+      "Felucca's installers never write. Install m-bootloader with its own instructions if you want it.", product);
+  const pin = STOCK_PINS[product];
+  if (!pin || bytes.length !== pin.size || await sha256hex(bytes) !== pin.sha256) {
+    if (STOCK_RE.test(product))
+      throw refuse("stockUnpinned", `${product} is reserved for M-VAVE's official firmware: only the exact reviewed ` +
+        `files (${Object.values(STOCK_PINS).map((p) => p.version).join(", ")}) are installed, and this is not one of them.`, product);
+    throw refuse("stockNotOfficial", "Select the unmodified official FM-1 V15 or V16 file (FM-1.fwsc).");
+  }
   const pkg = new Package(bytes);
-  if (pkg.product !== "FM-1_015" || pkg.flashFileOff !== 1044 || pkg.flashSize !== 602112 ||
-      pkg.appBase !== 16384 || pkg.appOff !== 16672 || pkg.app.size !== STOCK_APP_SIZE ||
-      !pkg.entries.some((e) => e.type === 100 && e.name === "ota.bin" && e.size === 19969))
-    throw new Error("The official firmware has an unsupported FM-1 layout.");
-  return { product: pkg.product, image: logicalImage(bytes), sha256: STOCK_V15_SHA256 };
+  const ota = pkg.entries.find((e) => e.type === 100 && e.name === "ota.bin");
+  const head = ota && bytes.subarray(ota.dataOff + pkg.skew, ota.dataOff + pkg.skew + 32);
+  if (pkg.flashFileOff !== 1044 || pkg.flashSize !== pin.flashSize || pkg.appBase !== 16384 ||
+      pkg.appOff !== pin.appOff || pkg.app.size !== pin.appSize || !ota || ota.size !== STOCK_OTA.size ||
+      u16(head, 0) !== STOCK_OTA.hcrc || u16(head, 2) !== STOCK_OTA.dcrc || u32(head, 8) !== STOCK_OTA.len)
+    throw refuse("stockLayout", "The official firmware has an unsupported FM-1 layout.");
+  return { product, version: pin.version, image: logicalImage(bytes), sha256: pin.sha256, loader: STOCK_LOADER };
 }
 
 // official V15 + Felucca app -> installable package (Uint8Array)
@@ -260,4 +299,57 @@ export async function buildFeluccaPackage(stockBytes, appBytes, product) {
   pkg.setApp(appBytes);
   pkg.setProduct(product);
   return pkg.serialize();
+}
+
+// App identity syntax shared with tools/build.py. A loader identity is never a target.
+export function validateUpdateProduct(product) {
+  if (typeof product !== "string" || !/^FM-1_[A-Z0-9._-]{1,15}$/.test(product) ||
+      [...product].some((c, i) => ((c.charCodeAt(0) + i + 1) & 0xFF) === 0x7D))
+    throw new Error("Expected a nonempty FM-1 application product from the selected package.");
+  return product;
+}
+
+// Derive the next handshake from bytes, never from the OTA record name or target version.
+// Reconstruct marker bytes to pin either official file even through Updater.write directly.
+export async function updateLoaderFor(image, product) {
+  validateUpdateProduct(product);
+  image = image instanceof Uint8Array ? new Uint8Array(image) : image;
+  if (!(image instanceof Uint8Array) || image.length < 0x400 || image.length > 0x200000)
+    throw new Error("Invalid FM-1 logical image.");
+  if (STOCK_RE.test(product) || OPEN_RE.test(product)) {
+    const raw = new Uint8Array(image.length + BLOCKS);
+    for (let i = 0; i < BLOCKS; i++) {
+      raw.set(image.subarray(i * KEEP, (i + 1) * KEEP), i * BLK);
+      raw[i * BLK + KEEP] = i < product.length ? product.charCodeAt(i) + i + 1 : 0x7D;
+    }
+    raw.set(image.subarray(BLOCKS * KEEP), BLOCKS * BLK);
+    const stock = await validateStockPackage(raw);
+    return stock.loader;
+  }
+  const h = image.slice(0, 0x40); enc(h, 0, h.length);
+  const nent = u16(h, 8), end = 0x40 + nent * 0x50;
+  if (crc16(h.subarray(2)) !== u16(h, 0) || nent < 1 || nent > 11 ||
+      end > image.length || crc16(image.subarray(0x40, end)) !== u16(h, 2))
+    throw new Error("Invalid UFW header or entry list.");
+  const files = new Map();
+  for (let i = 0; i < nent; i++) {
+    const e = image.slice(0x40 + i * 0x50, 0x90 + i * 0x50); enc(e, 0, e.length);
+    const type = u16(e, 0), off = u32(e, 8), size = u32(e, 12);
+    if (off < end || off + size > image.length || crc16(image.subarray(off, off + size)) !== u16(e, 4) ||
+        ((type === 0 || type === 100) && files.has(type))) throw new Error("Invalid UFW file extent or CRC.");
+    files.set(type, { off, size });
+  }
+  const flash = files.get(0), loader = files.get(100);
+  if (!flash || flash.size !== 0x93000 || !loader || loader.off + 512 > image.length)
+    throw new Error("Missing or unsupported flash.bin / ota.bin.");
+  const b = image.subarray(loader.off, loader.off + loader.size), n = u32(b, 8);
+  const mark = new TextEncoder().encode("FELUCCA-LOADER-1");
+  const own = Array.from({ length: 65 }, (_, i) => 0x48 + i).some((off) =>
+    off + mark.length <= 0x48 + 64 && mark.every((v, i) => b[off + i] === v));
+  if (b.length < 0x40 || crc16(b.subarray(2, 32)) !== u16(b, 0) || u32(b, 4) !== 0x20 || b[12] !== 0x41 ||
+      loader.size !== n + 0x20 || n > 0x4E00 || crc16(b.subarray(0x22, 0x40)) !== u16(b, 0x20) ||
+      u32(b, 0x28) !== 0x01C0A800 || u32(b, 0x24) > 0x14000 ||
+      crc16(b.subarray(0x20)) !== u16(b, 2) || !own)
+    throw new Error("Not a supported Felucca update loader.");
+  return "ota-FM-1_900";
 }
