@@ -20,6 +20,7 @@ import { pathToFileURL } from "node:url";
 import * as proto from "./app/src/proto.js";
 import { Device } from "./app/src/device.js";
 import { T } from "./app/src/legacy_tables.js";
+import { t } from "./app/src/text.js";
 import { MigrationError, RULES, STORE_TYPES, TARGET, bankLegacyRecords, migrateObject, migrateProject, migrateUserBank, projectFormat,
   ruleFor, targetMismatch, fnv1a } from "./app/src/legacy.js";
 import { canMigrate, migratedManifest, migratedName, originalName, objectBytes, objectKey, recoveryCard, recoveryState, relist } from "./app/src/recovery.js";
@@ -32,14 +33,22 @@ const B = (s) => Uint8Array.from(Buffer.from(s, "base64"));
 const same = (a, b) => !!a && !!b && a.length === b.length && a.every((x, i) => x === b[i]);
 const STATES = ["empty", "current", "legacy", "unknown", "damaged"];
 
+/* Older native raw classifiers call these full-count headers CURRENT. Their conversion bytes remain the
+   reference; only that documented label difference is accepted in the ordinary native corpus comparison. */
+function vectorProjectState(p, inp, olderHeaderLabels = false) {
+  return olderHeaderLabels && p.state === 1 && inp.length === 3840
+    && new DataView(inp.buffer, inp.byteOffset, inp.byteLength).getUint32(0, true) === 0x46554E41
+    && inp[66] === T.P_COUNT && (inp[63] !== T.NPART || inp[64] < T.PROJ_PHYS) ? "legacy" : STATES[p.state];
+}
+
 /* the vectors: input bytes -> the firmware's output bytes (out absent: the firmware refuses the object) */
-function checkVectors(v, label) {
+function checkVectors(v, label, olderHeaderLabels = false) {
   const bad = [];
   for (const p of v.projects) {
     const inp = B(p.in), keep = inp.slice(); let got = null, err = null;
     try { got = migrateProject(inp).bytes; } catch (e) { err = e; }
     if (p.out ? !same(got, B(p.out)) : got || !(err instanceof MigrationError)) bad.push(`project ${p.name}${err ? ": " + err.message : ""}`);
-    if (p.state !== undefined && projectFormat(inp).state !== STATES[p.state]) bad.push(`state ${p.name}: ${projectFormat(inp).state}`);
+    if (p.state !== undefined && projectFormat(inp).state !== vectorProjectState(p, inp, olderHeaderLabels)) bad.push(`state ${p.name}: ${projectFormat(inp).state}`);
     if (!same(inp, keep)) bad.push(`input changed ${p.name}`);
   }
   for (const p of v.presets) {
@@ -57,6 +66,109 @@ function checkVectors(v, label) {
 const vectors = JSON.parse(readFileSync(join(HERE, "legacy_vectors.json"), "utf8"));
 ok(vectors.P_COUNT === TARGET.pcount && vectors.projects.length >= 20 && vectors.presets.length >= 2, "vectors: made for this library's P_COUNT");
 checkVectors(vectors, "vectors");
+/* PR594's codec classification (00253c4970815a4c90fac92cf318cebeb5adf805,
+   project_codec.c proj_classify): a full-count FUN10 still needs its pre-1.0 header conversions
+   when parts != NPART or phys < PROJ_PHYS. Larger phys bytes are already current. */
+const currentProject = B(vectors.projects.find((p) => p.name === "corpus FUN10 np 111 #0").out);
+const repairProjectHash = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength)
+  .setUint32(b.length - 4, fnv1a(b, b.length - 4), true);
+const headerCases = [];
+for (const parts of [0, 3, T.NPART, 5, 255]) for (const phys of [0, 1, T.PROJ_PHYS, 3, 255]) {
+  const bytes = currentProject.slice(); bytes[63] = parts; bytes[64] = phys; repairProjectHash(bytes);
+  headerCases.push({ bytes, parts, phys, state: parts === T.NPART && phys >= T.PROJ_PHYS ? "current" : "legacy" });
+}
+{
+  const bad = [];
+  for (const { bytes, parts, phys, state } of headerCases) {
+    const keep = bytes.slice(), format = projectFormat(bytes), r = migrateProject(bytes);
+    if (format.state !== state || r.from.state !== state) bad.push(`${parts}/${phys}: ${format.state}, expected ${state}`);
+    assert.equal(r.bytes[63], T.NPART, "existing GM drum-part conversion normalizes parts");
+    assert.equal(r.bytes[64], Math.max(phys, T.PROJ_PHYS), "existing PHYS conversion preserves newer headers");
+    assert.equal(projectFormat(r.bytes).state, "current");
+    assert.ok(migrateProject(r.bytes).same, "the converted output is idempotent");
+    assert.ok(same(bytes, keep), "classification and conversion preserve the original");
+    assert.equal(vectorProjectState({ state: 1 }, bytes), "current", "the default vector check retains supplied labels");
+    assert.equal(vectorProjectState({ state: 1 }, bytes, true), state, "old native labels differ only for old headers");
+    for (const code of [0, 2, 3, 4]) assert.equal(vectorProjectState({ state: code }, bytes, true), STATES[code]);
+  }
+  if (bad.length) console.log(bad.join("\n"));
+  ok(!bad.length, "FUN10 headers: 25 parts/phys cases classify and convert without changing originals");
+  for (const [phys, model, engine, outModel] of [[0, 2, T.ENGI_PHYS, 0], [1, 4, T.ENGI_DRUM, 0]]) {
+    const b = currentProject.slice(); b[63] = T.NPART; b[64] = phys;
+    b[68 + T.P_COUNT] = T.ENGI_PHYS; b[68 + T.P_E0] = 64 + model; repairProjectHash(b);
+    const keep = b.slice(), r = migrateProject(b);
+    assert.equal(r.bytes[68 + T.P_COUNT], engine);
+    assert.equal(r.bytes[68 + T.P_E0], 64 + outModel);
+    assert.ok(r.log.some((x) => x.rule === "retired"));
+    assert.ok(same(b, keep));
+  }
+  ok(true, "FUN10 old PHYS headers use the existing DUST and DRUM conversions");
+}
+const invalidHeaderCases = [0, 7, 112, 127].map((np) => {
+  const bytes = currentProject.slice(); bytes[63] = 0; bytes[64] = 0; bytes[66] = np; repairProjectHash(bytes);
+  return { bytes, state: "unknown" };
+});
+for (const state of ["current", "legacy"]) {
+  const bytes = headerCases.find((x) => x.state === state).bytes.slice(); bytes[bytes.length - 1] ^= 1;
+  // ed_raw_kind maps a codec hash failure to UNKNOWN; DAMAGED means a storage-copy CRC failure.
+  // Keep the file classifier's existing unknown label and refusal even with an old header.
+  invalidHeaderCases.push({ bytes, state: "unknown" });
+}
+for (const { bytes, state } of invalidHeaderCases) {
+  const keep = bytes.slice();
+  assert.equal(projectFormat(bytes).state, state);
+  assert.throws(() => migrateProject(bytes), MigrationError);
+  assert.ok(same(bytes, keep));
+}
+ok(true, "FUN10 old headers do not bypass count or hash refusals");
+
+/* Exercise the real Files change handler and row action, with only the DOM's element operations stubbed.
+   No Device is opened: any accidental device read fails rather than supplying imported bytes. */
+{
+  const previousDocument = globalThis.document, nodes = [];
+  class Element {
+    constructor(tag) { this.tag = tag; this.attrs = {}; this.children = []; this.events = {}; this.classList = { add() {} }; nodes.push(this); }
+    setAttribute(k, v) { this.attrs[k] = v; }
+    append(...kids) { this.children.push(...kids); }
+    addEventListener(k, fn) { this.events[k] = fn; }
+  }
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  try {
+    const dev = { rawCaps: () => 1, info: { pcount: T.P_COUNT }, storeObject() { throw new Error("offline import read the device"); } };
+    const st = recoveryState(), ui = { say() {} }; let pending;
+    const run = (fn, done) => { pending = Promise.resolve().then(fn).then(done); };
+    recoveryCard(dev, ui, st, run, false, () => {});
+    const input = nodes.find((x) => x.tag === "input");
+    const cases = [...headerCases, ...invalidHeaderCases];
+    input.files = cases.map(({ bytes }, i) => ({ name: `header-${i}.bin`, size: bytes.length, arrayBuffer: async () => bytes.slice().buffer }));
+    await input.events.change();
+    assert.equal(st.files.length, cases.length);
+    for (const [i, o] of st.files.entries()) {
+      assert.equal(o.state, cases[i].state, o.file);
+      assert.equal(canMigrate(o), cases[i].state === "legacy", o.file);
+      assert.ok(same(o.bytes, cases[i].bytes));
+    }
+    nodes.length = 0;
+    recoveryCard(dev, ui, st, run, false, () => {});
+    const actions = nodes.filter((x) => x.tag === "button" && x.children.includes(t("rawMigrate")));
+    assert.equal(actions.length, headerCases.filter((x) => x.state === "legacy").length);
+    actions[0].events.click(); await pending;
+    const o = st.files.find((x) => x.state === "legacy"), result = st.results.get(objectKey(o));
+    assert.ok(result.r && projectFormat(result.r.bytes).state === "current");
+    assert.equal(migratedManifest(o, result.r, null, "m.bin").uploaded, false);
+    assert.ok(same(o.bytes, cases[st.files.indexOf(o)].bytes), "Migrate keeps the imported original");
+    // Older devices/manifests can label these bytes current. Keep supplied metadata authoritative, as before.
+    input.files = [{ name: "old.bin", size: o.size, arrayBuffer: async () => o.bytes.slice().buffer },
+      { name: "old.json", size: 1, text: async () => JSON.stringify({ format: "felucca-store-object", file: "old.bin", type: 1,
+        state: "current", size: o.size, crc: o.crc, firmware: "older classifier" }) }];
+    await input.events.change();
+    assert.equal(st.files.at(-1).state, "current");
+    assert.equal(canMigrate(st.files.at(-1)), false);
+    ok(true, "Files: header labels control actual Migrate rows; conversion is local, originals and supplied metadata stay intact");
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
+  }
+}
 {
   const fmts = new Set(vectors.projects.map((p) => projectFormat(B(p.in)).fmt));
   ok([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].every((f) => fmts.has(f)), "vectors: every project format FUN1..FUN10");
@@ -272,14 +384,38 @@ for (const [label, opt] of [["1.6 without INFO 59", { auto: false, catalog: true
   ok(!/\b(rq|request|send|putObject|restoreBackup|BACKUP_PUT|UP_PUT|fetch)\b/.test(code) && !/from "\.\/device\.js"|fm1backup/.test(code), "read only: legacy.js has no device access");
 }
 
+function compileLegacy(fw, temp) {
+  const exe = join(temp, "gen_legacy");
+  execFileSync(process.env.CC || "cc", ["-O1", "-w", "-I" + join(fw, "build/gen"), "-I" + join(fw, "firmware/src"), "-I" + join(fw, "tests"),
+    "-o", exe, join(HERE, "gen_legacy.c"), "-lm"], { stdio: "pipe" });
+  return exe;
+}
+
+/* The header contract belongs to the unmerged codec, not older main's raw classifier.
+   Keep this optional source-pinned check separate from ordinary FELUCCA_ROOT vector regeneration. */
+const codec = process.env.FELUCCA_CODEC_ROOT;
+if (codec) {
+  const revision = "00253c4970815a4c90fac92cf318cebeb5adf805";
+  assert.equal(execFileSync("git", ["-C", codec, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), revision,
+    "FELUCCA_CODEC_ROOT must be the explicit PR594 oracle, not old main");
+  assert.equal(execFileSync("git", ["-C", codec, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }).trim(), "",
+    "the codec oracle's tracked source must be clean");
+  const temp = mkdtempSync(join(tmpdir(), "felucca-codec-header-"));
+  try {
+    const exe = compileLegacy(codec, temp);
+    for (const { bytes, state } of [...headerCases, ...invalidHeaderCases]) {
+      assert.equal(STATES[Number(execFileSync(exe, ["classify"], { input: bytes, encoding: "utf8" }).trim())], state);
+    }
+    ok(true, `codec ${revision.slice(0, 7)}: 25 headers and 6 count/hash refusals match the native classifier`);
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+} else console.log("native codec headers: skipped (set FELUCCA_CODEC_ROOT to the pinned PR594 checkout)");
+
 /* ------------------------------------------- the firmware (FELUCCA_ROOT) --- */
 const fw = process.env.FELUCCA_ROOT;
 if (fw) {
   const temp = mkdtempSync(join(tmpdir(), "felucca-legacy-"));
   try {
-    const exe = join(temp, "gen_legacy");
-    execFileSync(process.env.CC || "cc", ["-O1", "-w", "-I" + join(fw, "build/gen"), "-I" + join(fw, "firmware/src"), "-I" + join(fw, "tests"),
-      "-o", exe, join(HERE, "gen_legacy.c"), "-lm"], { stdio: "pipe" });
+    const exe = compileLegacy(fw, temp);
     const tables = readFileSync(join(HERE, "app/src/legacy_tables.js"), "utf8");
     const rev = /REVISION: "([^"]*)"/.exec(tables)[1];
     const big = { encoding: "utf8", maxBuffer: 1 << 28 };
@@ -314,7 +450,7 @@ for(uint32_t k=5;k<n-1;k++) printf("%s%u",k==5?"":",",host_wire[k]); puts("]"); 
     const [seed, count] = (process.env.FELUCCA_CORPUS || "1:240").split(":").map(Number);
     const corpus = join(temp, "corpus.json");
     writeFileSync(corpus, execFileSync(exe, ["corpus", String(seed), String(count)], big));
-    checkVectors(JSON.parse(readFileSync(corpus, "utf8")), `firmware: corpus seed ${seed}`);
+    checkVectors(JSON.parse(readFileSync(corpus, "utf8")), `firmware: corpus seed ${seed} (older header labels accepted)`, true);
   } finally { rmSync(temp, { recursive: true, force: true }); }
 } else console.log("native firmware: skipped (set FELUCCA_ROOT to a built firmware checkout)");
 

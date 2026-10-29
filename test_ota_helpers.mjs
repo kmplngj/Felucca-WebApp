@@ -1,7 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
 // Synthetic UFW with a CRC-valid custom loader; no vendor firmware or hardware.
-import { crc16 } from "./fm1pkg.js";
+import { crc16, productOf, STOCK_PINS } from "./fm1pkg.js";
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+// A directory requests both official fixtures. Preserve the older single-file setup for one selected version.
+// Missing explicitly requested files fail in the caller; an absent optional fixture is the only skip.
+export function stockFixtureFiles(selected, fallback) {
+  if (selected && statSync(selected).isFile()) {
+    const product = productOf(new Uint8Array(readFileSync(selected)));
+    if (!STOCK_PINS[product]) throw new Error("FELUCCA_STOCK must identify an official V15/V16 fixture");
+    return [{ product, path: selected, file: selected }];
+  }
+  const directory = selected || fallback;
+  return Object.keys(STOCK_PINS).map((product) => {
+    const file = `FM-1_v${STOCK_PINS[product].version.slice(1)}.fwsc`;
+    return { product, file, path: directory ? join(directory, file) : null };
+  });
+}
+
 export function customImage({ marker = "FELUCCA-LOADER-1", markerOffset = 0x4C } = {}) {
   const image = new Uint8Array(0x93400);
   const w16 = (b, o, n) => { b[o] = n; b[o + 1] = n >>> 8; };

@@ -49,12 +49,13 @@ The editor protocol is described in the firmware repository (`web/EDITOR_PROTOCO
 
 ## Update and resume compatibility
 
-Every `Updater.install(image, product, onStep)`, `resume(image, onStep, product)` and
+Every `Updater.install(image, product, onStep, loader?)`, `resume(image, onStep, product, loader?)` and
 `write(device, image, onStep, product)` call requires the selected package's application product.
 Missing, malformed or loader products fail before discovery or update traffic. Products follow the
 firmware build's `FM-1_` plus 1–15 uppercase ASCII letters, digits, dots, underscores or hyphens.
 The final application handshake must exactly match that product; an absent or different application
 never reports completion. The page already supplies its selected product for both install and resume.
+An optional loader assertion must agree with the package-derived loader; it cannot select another family.
 Each public call synchronously copies its input bytes before any awaited work, including Node Buffers and
 typed-array subclasses. Mutating the caller's input during preflight or progress callbacks cannot change
 the checked/transferred bytes.
@@ -62,7 +63,7 @@ the checked/transferred bytes.
 | Selected package | Accepted loader handshake |
 | --- | --- |
 | CRC-checked UFW containing Felucca's supported loader heads and initial `FELUCCA-LOADER-1` marker | `ota-FM-1_900` |
-| Unmodified official V15, pinned by SHA-256 and checked package layout | `ota-FM-1_015` |
+| Unmodified official V15 or V16, pinned individually by SHA-256 and checked package layout | `ota-FM-1_015` |
 
 Each pair is checked again at the public write boundary, including loaders discovered after staging.
 Other loader identities and crossed pairs are refused before sending an upgrade command or image bytes
@@ -72,11 +73,21 @@ An early rescue application answering `FM-1_…` follows the regular staging flo
 loader is checked. These rules describe existing loader recovery; they do not add a recovery command.
 The custom-loader marker is matched within the producer's first 64-byte literal window. Its following
 compressed LZ4 byte need not be NUL; that byte is not part of the marker contract.
+Only the reviewed official V15/V16 files are accepted for stock returns. Other `FM-1_0NN` packages,
+m-bootloader's `FM-1_099` installer and FM1 Open packages are refused before device discovery.
+FM1 Open devices are identified on `FM1` and `FM-1` ports and refused before backup or update traffic;
+return them to official V15 with M-VAVE's FM1 Open updater first. Official stock returns replace the
+installed bootloader, including m-bootloader. Reinstalling Felucca afterwards keeps that stock boot area;
+installing m-bootloader again uses its separate documented tool and procedure.
 
 `node test_ota.mjs` exercises the contract without hardware, browser or wall-clock delays. Set
-`FELUCCA_STOCK=/path/to/FM-1.fwsc` to include digest-verified official V15 success cases; without
-that proprietary fixture those cases are explicitly skipped, while custom-loader and stock rejection
-cases still run. An explicitly supplied missing, unreadable or nonmatching file fails; it never becomes a skip.
+`FELUCCA_STOCK=/path/to/official-files` to include digest-verified V15 and V16 success cases, using
+`FM-1_v15.fwsc` and `FM-1_v16.fwsc` in that directory. A single official file is also accepted to check
+that selected version. Without private fixtures, each unavailable version is explicitly skipped while
+custom-loader and stock rejection cases still run. An explicitly supplied missing, unreadable or
+nonmatching file fails; it never becomes a skip. Stock success tests exercise install, resume, direct
+write, immutable input snapshots and final identity. The protocol suite also exercises both stock
+versions through production MIDI discovery and request/response transfer against a simulated FM-1.
 
 ## Installer idle handling
 
@@ -158,11 +169,14 @@ The retained classic editor's absent MENU UI, FM6 bank sender, MIDI LEARN and CU
 palette checks remain explicit feature skips. The historical package comparison also remains an explicit skip:
 it needs an official `FM-1_v15.fwsc` and target-build inputs that this host-only gate does not provide. A green
 gate does not claim that comparison passed; its skip appears in the run summary.
-The updater stage separately permits only the explicit official-V15 success skip when `FELUCCA_STOCK` is
-unset. To include those success cases, run:
+The firmware reference in `ci/firmware.json` is merged native main
+`ac9a8cb80051142ceb64edc1cab7d44ff7f35feb`, containing the #622 stock-return policy. Native stock-pin,
+loader and refusal-rule comparisons are mandatory; missing or incompatible Python sources fail.
+Only exact private V15/V16 fixture skips are allowed in their protocol/updater suites when
+`FELUCCA_STOCK` is unset. To include both versions' success cases, run:
 
 ```sh
-FELUCCA_STOCK=/absolute/path/to/FM-1.fwsc python3 ci/check.py --firmware ../Felucca-ci
+FELUCCA_STOCK=/absolute/path/to/official-files python3 ci/check.py --firmware ../Felucca-ci
 ```
 
 The path is forwarded into the locked environment and the original
@@ -292,11 +306,25 @@ compatible device. It never requires writing an old fixture into hardware.
 
 Migration targets the current standard profile (111 parameters and matching playable engine IDs). Other profiles
 can still download originals, but conversion is disabled with a target-mismatch explanation. Legacy FUN1..FUN9 and
-older-count FUN10 projects plus supported user-preset records can convert to files. Settings, the retired FM6 bank
+older-count FUN10 projects plus supported user-preset records can convert to files. A full-count FUN10 file opened
+without a manifest is also LEGACY when its header still requests the old GM drum-part or PHYS conversion
+(`parts != 4` or `phys < 2`); Migrate uses the existing conversion and keeps the original bytes. Device listings and
+supplied manifests retain their reported state, including older firmware's labels. Settings, the retired FM6 bank
 and converted presets' FM6 patch links are not converted. Newer, damaged and unknown formats are preserved for
 export and refused for conversion. A migrated `.bin` is a recovery file, not an installable firmware package or an
 upload-ready project file; there is no current-schema upload in this workflow. Real USB/device observations remain
 separate from the host and mock tests.
+
+The header classifier follows the codec proposed in [Felucca PR594](https://github.com/kmplngj/Felucca/pull/594),
+not the older classifier on firmware main. `node test_legacy.mjs` covers the header truth table, conversion and actual
+offline Files actions without a device. For its additional native comparison, set
+`FELUCCA_CODEC_ROOT=/path/to/Felucca-at-00253c4970815a4c90fac92cf318cebeb5adf805` before that command. This separate
+oracle requires that clean PR594 checkout, its exact Engines submodule and generated standard headers in `build/gen`;
+it compiles the existing native probe and checks all 25 header cases plus count/hash refusals. It is independent of
+`FELUCCA_ROOT`, which retains the ordinary firmware tables/vectors/corpus comparison, including byte-exact converted
+outputs; its corpus check explicitly accepts older native CURRENT labels for these full-count legacy headers.
+No target image is required
+for the header probe, and it does not establish hardware or upload acceptance.
 
 ## Licence
 

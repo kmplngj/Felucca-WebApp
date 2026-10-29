@@ -12,7 +12,36 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
-from check import firmware_environment, font_input, owned_run
+from check import firmware_environment, font_input, owned_run, unexpected_skips
+
+
+class SkipPolicy(unittest.TestCase):
+    CODEC_SKIP = "native codec headers: skipped (set FELUCCA_CODEC_ROOT to the pinned PR594 checkout)"
+
+    def test_optional_codec_oracle_skip_is_retained_in_legacy_receipt(self):
+        log = "vectors: all ok\n" + self.CODEC_SKIP + "\nall ok\n"
+        self.assertEqual(unexpected_skips(log, "legacy"), ([self.CODEC_SKIP], []))
+
+    def test_codec_skip_is_not_allowed_in_other_suites(self):
+        for suite in ("classic", "app-protocol", "app", "catalog", "runner-regressions", "unknown"):
+            with self.subTest(suite=suite):
+                self.assertEqual(unexpected_skips(self.CODEC_SKIP, suite), ([self.CODEC_SKIP], [self.CODEC_SKIP]))
+
+    def test_new_or_changed_legacy_skips_still_fail(self):
+        for unknown in ("native firmware: skipped (set FELUCCA_ROOT to a built firmware checkout)",
+                        "native codec headers: skipped (oracle compilation failed)",
+                        self.CODEC_SKIP + " extra", "new validation: skipped (unavailable)",
+                        "unexpected comparison skip"):
+            with self.subTest(unknown=unknown):
+                self.assertEqual(unexpected_skips(self.CODEC_SKIP + "\n" + unknown, "legacy"),
+                                 ([self.CODEC_SKIP, unknown], [unknown]))
+
+    def test_existing_package_skip_remains_protocol_only(self):
+        line = "packages: skipped (needs FM-1_v15.fwsc and a felucca/build.py build)"
+        for suite in ("classic", "app-protocol", "legacy", "app", "unknown"):
+            with self.subTest(suite=suite):
+                self.assertEqual(unexpected_skips(line, suite),
+                                 ([line], [] if suite in ("classic", "app-protocol") else [line]))
 
 
 class FontInput(unittest.TestCase):
@@ -228,6 +257,17 @@ class AttemptSummary(unittest.TestCase):
         self.run_gate("--firmware", str(firmware), env={**env, "FELUCCA_INTERTIGHT": "chosen-font.ttf"})
         self.assertEqual(json.loads(marker.read_text()), str((self.root / "chosen-font.ttf").resolve()))
 
+    def test_stock_folder_reaches_locked_runner(self):
+        # A supplied FELUCCA_STOCK must survive the FELUCCA_* reset: stock-file skips are then unexpected, not documented.
+        firmware, revision = self.firmware_checkout()
+        self.pin.write_text(json.dumps({"repository": "kmplngj/Felucca", "revision": revision}))
+        marker = Path(self.temp.name) / "stock.json"
+        env = self.fake_tool("uv", "import os,json\nfrom pathlib import Path\n"
+                             f"Path({str(marker)!r}).write_text(json.dumps(os.environ.get('FELUCCA_STOCK')))\n"
+                             "raise SystemExit(73)\n")
+        self.run_gate("--firmware", str(firmware), env={**env, "FELUCCA_STOCK": "private-stock"})
+        self.assertEqual(json.loads(marker.read_text()), str((self.root / "private-stock").resolve()))
+
     def test_missing_font_replaces_previous_green_without_skip(self):
         firmware, revision = self.firmware_checkout()
         self.git_checkout(self.root)
@@ -294,6 +334,22 @@ class AttemptSummary(unittest.TestCase):
             self.assertEqual(isolated[key], client[key])
         self.assertEqual(client["GITHUB_REPOSITORY"], "kmplngj/Felucca-WebApp")
         self.assertEqual(client["GITHUB_SHA"], "b" * 40)
+
+
+class StockSkips(unittest.TestCase):
+    def test_only_optional_private_files_may_skip(self):
+        from check import STOCK_FILE_SKIPS
+        for suite in ("classic", "app-protocol"):
+            for line in STOCK_FILE_SKIPS:
+                self.assertEqual(unexpected_skips(line, suite), ([line], []))
+                self.assertEqual(unexpected_skips(line, suite, stock_requested=True), ([line], [line]))
+        for line in STOCK_FILE_SKIPS:
+            self.assertEqual(unexpected_skips(line, "legacy"), ([line], [line]))
+
+    def test_native_pin_parity_is_always_required(self):
+        line = "stock pins vs fm1_install.py: skipped (needs FELUCCA_TOOLS with the #619 installer)"
+        for suite in ("classic", "app-protocol", "ota"):
+            self.assertEqual(unexpected_skips(line, suite), ([line], [line]))
 
 
 if __name__ == "__main__":

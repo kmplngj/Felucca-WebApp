@@ -3,18 +3,18 @@
 // Public updater contract, fake devices and time only: node test_ota.mjs
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { Updater, pack7 } from "./fm1ota.js";
-import { logicalImage, updateLoaderFor, validateStockPackage } from "./fm1pkg.js";
-import { customImage } from "./test_ota_helpers.mjs";
+import { logicalImage, updateLoaderFor, validateStockPackage, OPEN_RE, STOCK_PINS } from "./fm1pkg.js";
+import { customImage, stockFixtureFiles } from "./test_ota_helpers.mjs";
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 const image = customImage();
-const id = (text) => ({ text, model: text.startsWith("ota-") ? text.split("_")[0] : text.startsWith("FM-1_") ? "FM-1" : text.split("_")[0] });
+const id = (text) => ({ text, model: text.startsWith("ota-") ? text.split("_")[0] : text.startsWith("FM-1_") ? "FM-1" : text.split("_")[0], open: OPEN_RE.test(text) });
 class FakeUpdater extends Updater {
   constructor(identity = "ota-FM-1_900", back = "FM-1_900", next = "ota-FM-1_900") {
-    super({}); this.identity = identity; this.back = back; this.next = next; this.probes = this.upgrades = this.data = 0; this.images = [];
+    super({}); this.identity = identity; this.back = back; this.next = next; this.probes = this.upgrades = this.data = 0; this.images = []; this.closed = [];
   }
-  dev(text) { return { id: id(text), link: { close() {}, send: () => { this.upgrades++; return true; } } }; }
+  dev(text) { return { id: id(text), link: { close: () => this.closed.push(text), send: () => { this.upgrades++; return true; } } }; }
   async find(filter) { this.probes++; const d = this.dev(this.identity); return filter(d.id) ? d : null; }
   async waitFor(filter) {
     const d = this.dev(this.upgrades < 2 && !this.identity.startsWith("ota-") ? this.next : this.back || "ota-FM-1_900");
@@ -36,22 +36,42 @@ assert.equal(await updateLoaderFor(image, "FM-1_TEST_1.0"), "ota-FM-1_900");
 assert.equal(await updateLoaderFor(customImage({ markerOffset: 0x78 }), "FM-1_900"), "ota-FM-1_900");
 await assert.rejects(() => updateLoaderFor(customImage({ marker: "FELUCCA-LOADER-X" }), "FM-1_900"), /Not a supported/);
 await assert.rejects(() => updateLoaderFor(customImage({ markerOffset: 0x88 }), "FM-1_900"), /Not a supported/);
-await assert.rejects(() => updateLoaderFor(image, "FM-1_015"));
+for (const product of ["FM-1_015", "FM-1_016", "FM-1_017", "FM-1_099", "FM-1_8123456"])
+  await assert.rejects(() => updateLoaderFor(image, product));
 const damaged = image.slice(); damaged[0x250] ^= 1;
 await assert.rejects(() => updateLoaderFor(damaged, "FM-1_900"));
 // Exercise the real handshake parser for build-product overrides as well as numeric IDs.
-for (const text of ["FM-1_TEST_1.0", "ota-FM-1_900"]) {
-  const input = { name: "Felucca", state: "connected", open: async () => {} };
-  const output = { name: "Felucca", state: "connected", open: async () => {}, send() {
+for (const text of ["FM-1_TEST_1.0", "ota-FM-1_900", "FM1_OFFICIAL_OPEN", "FM1_COMMUNITY_7", "FM-1_8123456"]) {
+  const input = { name: "FM1", state: "connected", open: async () => {} };
+  const output = { name: "FM1", state: "connected", open: async () => {}, send() {
     const t = [...new TextEncoder().encode(text)];
     input.onmidimessage({ data: [0xF0, ...pack7([0, 0x59, 0x11, 0, 0, 0, ...t, ...Array(28 - t.length).fill(0)]), 0xF7] });
   } };
   const u = new Updater({ inputs: new Map([[1, input]]), outputs: new Map([[1, output]]) });
-  const found = await u.find(); assert.equal(found.id.text, text); found.link.close();
+  const found = await u.find(); assert.equal(found.id.text, text); assert.equal(found.id.open, OPEN_RE.test(text)); found.link.close();
 }
 const originalTimer = globalThis.setTimeout;
 globalThis.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
 try {
+  for (const text of ["FM1_OFFICIAL_OPEN", "FM1_COMMUNITY_7", "FM-1_8123456"]) {
+    const u = new FakeUpdater(text);
+    await rejects(() => u.install(image, "FM-1_900"), "open");
+    assert.equal(u.upgrades + u.data, 0);
+    assert(u.closed.includes(text));
+  }
+  for (const method of ["install", "resume"]) {
+    const u = new FakeUpdater();
+    await rejects(() => method === "install" ? u.install(image, "FM-1_900", null, "ota-FM-1_015")
+      : u.resume(image, null, "FM-1_900", "ota-FM-1_015"), "incompatible");
+    assert.equal(u.probes + u.upgrades + u.data, 0, "a caller cannot override the derived loader");
+  }
+  for (const method of ["install", "write"]) {
+    const u = new FakeUpdater(method === "install" ? "FM-1_900" : "ota-FM-1_900");
+    u.serve = async () => { throw new Error("transfer refused"); };
+    await assert.rejects(() => method === "install" ? u.install(image, "FM-1_900")
+      : u.write(u.dev(u.identity), image, undefined, "FM-1_900"), /transfer refused/);
+    assert(u.closed.includes(u.identity), "failed transfers release their MIDI handler");
+  }
   for (const loader of ["ota-FM-1_015", "ota-FM-1_901", "ota-FM-1_999", "ota-FM-2_900"]) {
     const u = new FakeUpdater(loader);
     await rejects(() => u.resume(image, null, "FM-1_900"), "incompatible");
@@ -94,22 +114,51 @@ try {
   const unexpected = new FakeUpdater("FM-1_900", "FM-1_900", "ota-FM-1_999");
   await rejects(() => unexpected.install(image, "FM-1_900"), "incompatible");
   assert.equal(unexpected.data, 1); // no loader write
-  const stockPath = process.env.FELUCCA_STOCK;
-  if (stockPath) {
-    const bytes = new Uint8Array(readFileSync(stockPath));
+  for (const { product, path } of stockFixtureFiles(process.env.FELUCCA_STOCK, process.env.FELUCCA_ROOT)) {
+    if (!path || !existsSync(path)) {
+      if (process.env.FELUCCA_STOCK) throw new Error(`requested official fixture missing: ${path}`);
+      console.log(`updater: official ${STOCK_PINS[product].version} success: skipped (set FELUCCA_STOCK to official files)`);
+      continue;
+    }
+    const bytes = new Uint8Array(readFileSync(path));
     const stock = await validateStockPackage(bytes);
+    assert.equal(stock.product, product);
     assert.equal(await updateLoaderFor(logicalImage(bytes), stock.product), "ota-FM-1_015");
     const u = new FakeUpdater("ota-FM-1_015", stock.product);
     assert.equal(await u.resume(stock.image, null, stock.product), true);
     const install = new FakeUpdater("FM-1_900", stock.product, "ota-FM-1_015");
     assert.equal(await install.install(stock.image, stock.product), stock.product);
+    const write = new FakeUpdater("ota-FM-1_015", stock.product);
+    assert.equal((await write.write(write.dev(write.identity), stock.image, undefined, stock.product)).finished, true);
     const bad = new FakeUpdater();
     await rejects(() => bad.resume(stock.image, null, stock.product), "incompatible");
     assert.equal(bad.upgrades + bad.data, 0);
+    const crossed = new FakeUpdater("FM-1_900", stock.product, "ota-FM-1_900");
+    await rejects(() => crossed.install(stock.image, stock.product), "incompatible");
+    assert.equal(crossed.data, 1, "a crossed loader after staging receives no write");
+    for (const method of ["install", "resume", "write"]) {
+      const source = Buffer.from(stock.image), u = new FakeUpdater(method === "install" ? "FM-1_900" : "ota-FM-1_015", product, "ota-FM-1_015");
+      const pending = method === "install" ? u.install(source, product) : method === "resume" ? u.resume(source, null, product)
+        : u.write(u.dev(u.identity), source, undefined, product);
+      source.fill(0);
+      await pending;
+      assert(u.images.length > 0);
+      for (const served of u.images) assert.deepEqual(served, stock.image);
+    }
+    for (const method of ["validateStockPackage", "updateLoaderFor"]) {
+      const source = Buffer.from(method === "validateStockPackage" ? bytes : stock.image);
+      const pending = method === "validateStockPackage" ? validateStockPackage(source) : updateLoaderFor(source, product);
+      source.fill(0);
+      const checked = await pending;
+      if (method === "validateStockPackage") assert.deepEqual(checked.image, stock.image);
+      else assert.equal(checked, "ota-FM-1_015");
+    }
+    const wrongBack = new FakeUpdater("ota-FM-1_015", product === "FM-1_015" ? "FM-1_016" : "FM-1_015");
+    await rejects(() => wrongBack.resume(stock.image, null, product), "mismatch");
     const changed = stock.image.slice(); changed[changed.length - 1] ^= 1;
     const corrupt = new FakeUpdater("ota-FM-1_015", stock.product);
     await rejects(() => corrupt.resume(changed, null, stock.product), "badpkg");
     assert.equal(corrupt.probes + corrupt.upgrades + corrupt.data, 0);
-  } else console.log("updater: official V15 success: skipped (set FELUCCA_STOCK to the unmodified official file)");
+  }
 } finally { globalThis.setTimeout = originalTimer; }
 console.log("updater contract: all ok");

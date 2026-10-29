@@ -24,7 +24,9 @@ PROBE_TIMEOUT = 30
 LOCKED_RUNNER_TIMEOUT = 18 * 60
 INTERTIGHT_SHA256 = "b81b73dcb64df3c230cabade7df6c5773bf863233f24c9ee51087519f1f88b6f"
 PACKAGE_SKIP = "packages: skipped (needs FM-1_v15.fwsc and a felucca/build.py build)"
-OTA_STOCK_SKIP = "updater: official V15 success: skipped (set FELUCCA_STOCK to the unmodified official file)"
+CODEC_HEADER_SKIP = "native codec headers: skipped (set FELUCCA_CODEC_ROOT to the pinned PR594 checkout)"
+OTA_STOCK_SKIPS = {f"updater: official V{v} success: skipped (set FELUCCA_STOCK to official files)" for v in ("15", "16")}
+STOCK_FILE_SKIPS = {f"stock: FM-1_v{v}.fwsc: skipped (not in FELUCCA_STOCK)" for v in ("15", "16")}
 CLASSIC_SKIPS = {
     "editor: MENU settings (this editor has none)",
     "FM6 bank: (editor.html has no voice bank sender)",
@@ -66,10 +68,16 @@ def unexpected_skips(text, suite, *, stock_requested=False):
     skips = [line.strip() for line in text.splitlines()
              if line.rstrip().endswith(" skip") or ": skipped (" in line or re.match(r"(?i)\s*skip\b", line)]
     allowed = {PACKAGE_SKIP} if suite in ("classic", "app-protocol") else set()
+    if suite == "legacy":
+        # Ordinary CI uses the released/pinned native reference, not the unmerged PR594 codec oracle.
+        allowed.add(CODEC_HEADER_SKIP)
     if suite == "ota" and not stock_requested:
-        allowed.add(OTA_STOCK_SKIP)
+        allowed |= OTA_STOCK_SKIPS
+    if suite in ("classic", "app-protocol") and not stock_requested:
+        allowed |= STOCK_FILE_SKIPS
     return skips, [line for line in skips if line not in allowed and not (
         suite == "classic" and line.removesuffix("skip").strip() in CLASSIC_SKIPS)]
+
 
 
 def firmware_pin(override):
@@ -185,6 +193,9 @@ def main():
         if stock := os.environ.get("FELUCCA_STOCK"):
             env["FELUCCA_STOCK"] = str(Path(stock).resolve())
         env.update(PYTHONDONTWRITEBYTECODE="1", FELUCCA_PROFILE="standard", FELUCCA_FONT="m8stealth")
+        if os.environ.get("FELUCCA_STOCK"):
+            # the private official V15/V16 files (test_web.mjs): once supplied, their checks must run, never skip
+            env["FELUCCA_STOCK"] = str(Path(os.environ["FELUCCA_STOCK"]).expanduser().resolve())
         if os.environ.get("FELUCCA_INTERTIGHT"):
             # Resolve before uv changes cwd; an explicit bad override must not fall back to firmware.
             env["FELUCCA_INTERTIGHT"] = str(Path(os.environ["FELUCCA_INTERTIGHT"]).expanduser().resolve())
