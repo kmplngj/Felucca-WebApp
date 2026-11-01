@@ -396,13 +396,16 @@ const parse = {
     return o;
   },
   [CMD.LEARN_SET](a) { return { rc: a[0], ...parse[CMD.LEARN_GET](a.slice(1)) }; },
-  /* CUSTOM palette (1.6, info.customPalette): flags (bit 0 stored, bit 1 in use), n, n x (r5, g6, b5) -> {stored, active, c: [RGB565 x n]}
+  /* CUSTOM palette: flags bits 0 stored, 1 in use, 2 explicit native schema; n, n x (r5, g6, b5).
+     Schema 1 is BG SURF TEXT THEME ACCENT; schema 2 is BG IDENTITY TEXT PRIMARY SECONDARY.
      (with none stored: the palette in use); PALETTE_SET: rc (0 saved, 1 arguments, 3 RAM only, 4 saved at STOP), then that. The device takes any
      colours: the editor warns of the ones that are hard to read (palUnreadable) */
   [CMD.PALETTE_GET](a) {
     const n = a[1] ?? 0, c = [];
+    if (a.length !== 2 + 3 * n || n !== 5 || a[0] & ~7 ||
+        a.slice(2).some((x, i) => x > (i % 3 === 1 ? 63 : 31))) throw new Error("bad palette reply");
     for (let i = 0; i < n; i++) c.push((a[2 + 3 * i] << 11) | (a[3 + 3 * i] << 5) | a[4 + 3 * i]);
-    return { stored: !!(a[0] & 1), active: !!(a[0] & 2), n, c };
+    return { stored: !!(a[0] & 1), active: !!(a[0] & 2), schema: a[0] & 4 ? 2 : 1, n, c };
   },
   [CMD.PALETTE_SET](a) { return { rc: a[0], ...parse[CMD.PALETTE_GET](a.slice(1)) }; },
   /* MENU settings: kind 0 an enum (one name per value min..max), 1 a number with a unit; id 127: no item at index.
@@ -514,10 +517,10 @@ const req = {
   learnSet: (cc, track, id) => [CMD.LEARN_SET, [0, cc & 0x7F, track & 0x7F, id & 0x7F]],
   learnClear: (cc) => [CMD.LEARN_SET, [1, cc & 0x7F]],
   learnClearAll: () => [CMD.LEARN_SET, [2]],
-  /* CUSTOM palette (info.customPalette): read it; op 0 show five RGB565 colours (RAM only), op 1 store them (and use them),
-     op 2 remove it, op 3 drop the preview */
-  paletteGet: () => [CMD.PALETTE_GET, []],
-  paletteSet: (op, c) => [CMD.PALETTE_SET, [op & 0x7F, ...(op <= 1 ? c.flatMap((x) => [x >> 11, (x >> 5) & 63, x & 31]) : [])]],
+  /* CUSTOM: GET[2] requests explicit schema, detected only by reply flag4. The default remains legacy GET[].
+     SET ops 0..3 are legacy; schema2 adds bit0x10 after negotiation. */
+  paletteGet: (schema = 1) => [CMD.PALETTE_GET, schema === 2 ? [2] : []],
+  paletteSet: (op, c, schema = 1) => [CMD.PALETTE_SET, [(op | (schema === 2 ? 0x10 : 0)) & 0x7F, ...(op <= 1 ? c.flatMap((x) => [x >> 11, (x >> 5) & 63, x & 31]) : [])]],
   /* MENU settings (firmware with info.menuCount) */
   menuDesc: (i) => [CMD.MENU_DESC, [i & 0x7F]],
   menuSet: (id, v) => [CMD.MENU_SET, [id & 0x7F, ...v14enc(v)]],
@@ -1406,10 +1409,21 @@ const PAL_BUILTIN = [
   ["PAPER", 0xf77c, 0xe6d9, 0x20e3, 0x0aa8, 0xa9c1], ["HI-CON", 0x0000, 0x2945, 0xffdf, 0xff40, 0x073f],
   ["NIGHT", 0x0000, 0x00c1, 0x9735, 0x3eec, 0xffdf], ["MONO", 0x0000, 0x0000, 0xffff, 0xffff, 0xffff],
 ].map(([name, ...c]) => ({ name, c }));
+/* Explicit schema 2, from hugelton/Felucca v1.8.0 tools/gen_ui_palettes.py.
+ * Legacy roles and seeds above stay unchanged for earlier firmware. */
+const PAL_ROLES_V2 = ["BG", "IDENTITY", "TEXT", "PRIMARY", "SECONDARY"];
+const PAL_BUILTIN_V2 = [
+  ["GREY", 0x0841, 0xb596, 0xef5d, 0xfa49, 0x4c7f], ["GREEN", 0x0081, 0x56af, 0xe7bc, 0xfa49, 0xfeab],
+  ["AMBER", 0x1061, 0xfd45, 0xf77b, 0xfa49, 0x66bc], ["ICE", 0x0883, 0x55dd, 0xe79f, 0xfa49, 0xfc6c],
+  ["VIOLET", 0x1063, 0xb45e, 0xf75f, 0xfa49, 0x6f35], ["ROSE", 0x1842, 0xf396, 0xff5e, 0xfa49, 0xfead],
+  ["PAPER", 0xf77c, 0x0aa8, 0x20e3, 0xb8c5, 0xa9c1], ["HI-CON", 0x0000, 0xff40, 0xffdf, 0xfa49, 0x073f],
+  ["NIGHT", 0x0000, 0x3eec, 0x9735, 0xfa49, 0xffdf], ["MONO", 0x0000, 0xffff, 0xffff, 0xfa49, 0x4c7f],
+].map(([name, ...c]) => ({ name, c }));
 const palLuma = (c) => (Math.trunc((c >> 11) * 255 / 31) * 54 + Math.trunc(((c >> 5) & 63) * 255 / 63) * 183 + Math.trunc((c & 31) * 255 / 31) * 19) >> 8;
 const PAL_RULE = [["TEXT", 2, "BG", 0, 128], ["TEXT", 2, "SURF", 1, 96], ["THEME", 3, "BG", 0, 80], ["ACCENT", 4, "BG", 0, 64]];
-const palUnreadable = (c) => PAL_RULE.filter(([, a, , b, min]) => Math.abs(palLuma(c[a]) - palLuma(c[b])) < min).map(([x, , y, , min]) => ({ a: x, b: y, min }));
-const palReadable = (c) => palUnreadable(c).length === 0;
+const PAL_RULE_V2 = [["TEXT", 2, "BG", 0, 128], ["IDENTITY", 1, "BG", 0, 80], ["SECONDARY", 4, "BG", 0, 64], ["PRIMARY", 3, "BG", 0, 64]];
+const palUnreadable = (c, schema = 1) => (schema === 2 ? PAL_RULE_V2 : PAL_RULE).filter(([, a, , b, min]) => Math.abs(palLuma(c[a]) - palLuma(c[b])) < min).map(([x, , y, , min]) => ({ a: x, b: y, min }));
+const palReadable = (c, schema = 1) => palUnreadable(c, schema).length === 0;
 
 /* ----------------------------------------------------------------- DIGITAL --- */
 /* DIGITAL (engine 1, four-operator FM) was replaced by FM6 (1.0): the firmware keeps engine 1 reserved (its name
@@ -1833,7 +1847,7 @@ function makeMockDevice(opt = {}) {
     uiCaps: opt.legacy || opt.v3 || opt.v5 ? 0 : (opt.uiCaps ?? 25) & (opt.noUnifiedUI ? ~16 : 127),
     palette: 0, font: 0, monitor: 0, filter: 0, bankSig: 0,
     palettes: ["GREY", "GREEN", "AMBER", "ICE", "VIOLET", "ROSE", "PAPER", "HI-CON", "NIGHT", "MONO"],
-    custom: { stored: false, active: false, c: PAL_BUILTIN[0].c.slice(), preview: null },   /* CUSTOM palette (1.6; palette: the base) */
+    custom: { stored: false, active: false, c: (opt.paletteschema === 2 ? PAL_BUILTIN_V2 : PAL_BUILTIN)[0].c.slice(), preview: null },
     favorites: Array.from({ length: 128 }, () => []),
     menu: [...MENU, ...(opt.graph ? [GRAPH_MENU] : [])].map((m) => m.def),                   /* the MENU settings' values (COLOR: palette) */
     vbank: { valid: false, name: "", voices: new Array(32).fill(null), tx: null },   /* FM6's voice bank (fm6_vbank.c) */
@@ -2316,23 +2330,29 @@ function makeMockDevice(opt = {}) {
       case CMD.PALETTE_GET: case CMD.PALETTE_SET: {  /* editor_palette.c, favorites.c cpal_ok */
         if (opt.noFm6 || opt.noVbank || opt.noLearn || opt.noCond || opt.noPalette || !st.uiCaps) return null;
         const cu = st.custom, save = opt.noFlash ? 3 : opt.deferSettings ? 4 : 0;
+        const native = opt.paletteschema === 2, explicit = native && (cmd === CMD.PALETTE_GET ? a.length === 1 && a[0] === 2 : !!(a[0] & 0x10));
+        const base = () => cu.stored ? cu.c : (native ? PAL_BUILTIN_V2 : PAL_BUILTIN)[st.palette].c;
         if (cmd === CMD.PALETTE_GET) {
-          if (a.length) return null;
+          // Older donor firmware ignores this payload; the released fork rejects it.
+          if (native ? a.length && !explicit : opt.rejectPaletteProbe && a.length) return null;
         } else {
           let rc = 1;
-          if (a.length === 16 && a[0] <= 1) {
+          const op = explicit ? a[0] & ~0x10 : a[0];
+          if (a.length === 16 && op <= 1) {
             const c = [];
             for (let i = 0; i < 5; i++) c.push(a[1 + 3 * i] << 11 | a[2 + 3 * i] << 5 | a[3 + 3 * i]);
             const inRange = [0, 1, 2, 3, 4].every((i) => a[1 + 3 * i] <= 31 && a[2 + 3 * i] <= 63 && a[3 + 3 * i] <= 31);
             rc = !inRange ? 1 : 0;                      /* (any colours: the editor warns) */
-            if (!rc && a[0] === 0) cu.preview = c;
-            else if (!rc) { cu.c = c; cu.stored = true; cu.active = true; cu.preview = null; rc = save; }
-          } else if (a.length === 1 && a[0] === 2) { cu.stored = false; cu.active = false; cu.preview = null; rc = save; }
-          else if (a.length === 1 && a[0] === 3) { cu.preview = null; rc = 0; }
+            const adapted = native && !explicit ? [c[0], c[3], c[2], base()[3], c[4]] : c;
+            if (!rc && op === 0) cu.preview = adapted;
+            else if (!rc) { cu.c = adapted; cu.stored = true; cu.active = true; cu.preview = null; rc = save; }
+          } else if (a.length === 1 && op === 2) { cu.stored = false; cu.active = false; cu.preview = null; rc = save; }
+          else if (a.length === 1 && op === 3) { cu.preview = null; rc = 0; }
           b(rc);
         }
-        b((cu.stored ? 1 : 0) | (cu.stored && cu.active ? 2 : 0)); b(5);
-        for (const x of (cu.stored ? cu.c : PAL_BUILTIN[st.palette].c)) { b(x >> 11); b((x >> 5) & 63); b(x & 31); }
+        b((cu.stored ? 1 : 0) | (cu.stored && cu.active ? 2 : 0) | (explicit ? 4 : 0)); b(5);
+        const c = base(), response = native && !explicit ? [c[0], c[0], c[2], c[1], c[4]] : c;
+        for (const x of response) { b(x >> 11); b((x >> 5) & 63); b(x & 31); }
         break;
       }
       case CMD.PRESET:
@@ -2746,6 +2766,6 @@ export {
   parseWav, resample, pyRound, normalize, FADE, takeSample, zoomView, autoTrim, rootFromName, buildSlot,
   LIB, paramKeys, sameKeys, remapParams, tailParams, patNorm, patternFromSteps, stepsFromPattern, patternUsed, gridFromSteps,
   cleanPatch, libraryFile, readLibraryFile, FLASH_OPT, bank, capturePatch, TRACK_OWN, P_CHORD, P_LANES, trackOwn, auditionPatch,
-  startWatch, mixer, FM6, fm6Bank, midiLearn, PAL_ROLES, PAL_BUILTIN, palLuma, PAL_RULE, palUnreadable, palReadable, FM4, CATEGORIES, STEP_CONDS, fromDigital, reservedFm4, PERC_SET, fromPerc, engineLabel, makeMockDevice, parseMotionAll,
+  startWatch, mixer, FM6, fm6Bank, midiLearn, PAL_ROLES, PAL_BUILTIN, PAL_ROLES_V2, PAL_BUILTIN_V2, palLuma, PAL_RULE, PAL_RULE_V2, palUnreadable, palReadable, FM4, CATEGORIES, STEP_CONDS, fromDigital, reservedFm4, PERC_SET, fromPerc, engineLabel, makeMockDevice, parseMotionAll,
   readDevicePreferences, aliasOf, divLength, enumShown, ENGINE_ORDER, engineOrder, devicePresetRows, MENU, MENU_TABS, readDeviceMenu,
 };

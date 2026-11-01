@@ -17,6 +17,7 @@ python3 serve.py            # http://localhost:8766/app/index.html?mock=1
 node test_settings.mjs      # MENU replies, sparse IDs; FELUCCA_ROOT adds actual native settings/backup checks
 node test_menu_order.mjs    # ordered MENU writes during background work, transport failure and close
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
+node test_palette_schema.mjs # same-version old/new CUSTOM negotiation, fallback and exact write semantics
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
 node test_backup.mjs        # the full backup
 node test_project_import.mjs # firmware project bytes, import/restore compatibility guards
@@ -189,6 +190,28 @@ are used as CUSTOM, including when copied from GREY or MONO; their special built
 Warnings never block saving or alter colours, stored bytes, live-preview commands or firmware rendering.
 Open `http://localhost:8774/test_fixtures/menu/palette.html` for the mock-only live-warning, save-byte,
 preview/revert and language regression; it must report PASS. Real FM-1 palette/readability checks remain separate.
+
+CUSTOM also supports the explicit native five-colour schema: BG, IDENTITY (color2), TEXT,
+PRIMARY (REC/warnings) and SECONDARY (active control). Settings asks `PALETTE_GET 2` and uses this order
+only when reply flag bit 2 (`4`) is present. A legacy reply uses BG, SURF, TEXT, THEME, ACCENT;
+if the firmware rejects or times out on the probe, Settings retries the original argument-free GET.
+The reported firmware version and parameter count do not select a schema. Unsupported or malformed replies
+leave CUSTOM unavailable, preventing writes with an unknown order.
+
+Only a negotiated native reply enables SET operations 16–19 (preview, store, remove, revert).
+Legacy connections retain operations 0–3. Native seeds copy the upstream 1.8 five-colour values from
+[`hugelton/Felucca@75a8c674`](https://github.com/hugelton/Felucca/blob/75a8c67458c12dac31330934315f7617c75a1a42/tools/gen_ui_palettes.py),
+GPL-3.0-only; earlier firmware keeps its original seeds. The native preview follows the fork's Direction A
+surface and independent PRIMARY colour, including PRIMARY contrast warnings; warnings remain non-blocking.
+The original CI firmware pin and baseline mock remain unchanged. An explicit
+`app/index.html?mock=1&paletteschema=2` selects the new mock contract; `test_fixtures/menu/palette-schema.html`
+checks same-version legacy/native reconnects, labels, seeds, primary colour, live preview, save/revert/remove
+and language changes. Both palette fixtures must report PASS. For a producer seed comparison, run
+`FELUCCA_PALETTES_V2=/path/to/Felucca/tools/gen_ui_palettes.py node test_palette_schema.mjs`.
+
+`make_site.py` bundles `app/index.html` on each build. For a local reviewable single page, run
+`python3 bundle.py app/index.html build/editor.html`; `editor.html` remains the retained classic editor.
+These changes do not update an already hosted site or the firmware repository's pinned WebApp revision.
 
 ## Engine catalogs and backup compatibility
 

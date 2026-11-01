@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
 //
 // CUSTOM, the user's palette (1.6, EDITOR_PROTOCOL.md "CUSTOM palette"): the tokens the device derives from the five
-// colours a palette stores (BG SURF TEXT THEME ACCENT, RGB565), and the colour conversions of the page. A port of
+// colours a palette stores (legacy BG SURF TEXT THEME ACCENT or native BG IDENTITY TEXT PRIMARY SECONDARY), and the colour conversions of the page. A port of
 // felucca/src/gfx.c (ux_mix, palette_set): the editor shows what the device will draw. The rule for colours that are
 // readable and the built-in palettes are in proto.js (the protocol section: the mock device keeps that legacy rule).
 // Editing warnings below additionally check the derived text and graphic roles against contrast ratios.
 
-import { PAL_BUILTIN, PAL_ROLES, PAL_RULE, palLuma, palReadable, palUnreadable } from "./proto.js";
+import { PAL_BUILTIN, PAL_ROLES, PAL_RULE, PAL_BUILTIN_V2, PAL_ROLES_V2, PAL_RULE_V2, palLuma, palReadable, palUnreadable } from "./proto.js";
 
 export const ROLES = PAL_ROLES;
 export const BUILTIN = PAL_BUILTIN;
@@ -15,6 +15,9 @@ export const RULE = PAL_RULE;
 export const luma = palLuma;
 export const readable = palReadable;
 export const unreadable = palUnreadable;
+export const roles = (schema = 1) => schema === 2 ? PAL_ROLES_V2 : PAL_ROLES;
+export const builtins = (schema = 1) => schema === 2 ? PAL_BUILTIN_V2 : PAL_BUILTIN;
+export const rules = (schema = 1) => schema === 2 ? PAL_RULE_V2 : PAL_RULE;
 
 /* RGB565 <-> the three 7-bit bytes of the protocol (red 0..31, green 0..63, blue 0..31) and a #rrggbb string */
 export const rgb565 = (r, g, b) => (r >> 3) << 11 | (g >> 2) << 5 | b >> 3;               /* 8-bit channels */
@@ -42,14 +45,17 @@ export function mix(a, b, pct) {
 }
 
 /* the tokens of a CUSTOM palette in the FLAT style (gfx.c palette_set: not GREY, not MONO) */
-export function derive(c) {
-  const [bg, surf, text, theme, accent] = c, light = palLuma(bg) > 128;
+export function derive(c, schema = 1) {
+  const [bg, second, text, fourth, accent] = c, light = palLuma(bg) > 128;
+  const theme = schema === 2 ? second : fourth, surf = schema === 2 ? bg : second;
+  // Native Direction A has no filled SURF; raised chips still use its 12% identity mix.
+  const raised = schema === 2 ? mix(bg, theme, 12) : surf;
   return {
     bg, surf, text, theme, accent,
     mid: mix(bg, text, PCT.mid), dim: mix(bg, text, PCT.dim), line: mix(bg, text, PCT.line),
     sel: mix(bg, theme, PCT.sel), tint: mix(bg, theme, PCT.tint), ink: bg,
-    raise: mix(surf, text, PCT.raise), key: mix(bg, text, PCT.key),
-    lane: mix(surf, theme, 10), grid: mix(surf, text, 6), rec: light ? REC_LIGHT : REC_DARK, light,
+    raise: mix(raised, text, PCT.raise), key: mix(bg, text, PCT.key),
+    lane: mix(surf, theme, 10), grid: mix(surf, text, 6), rec: schema === 2 ? fourth : light ? REC_LIGHT : REC_DARK, light,
   };
 }
 
@@ -70,12 +76,14 @@ const CONTRAST_RULES = [
   ["mid", "bg", "graphics", 3], ["mid", "line", "graphics", 3], ["accent", "bg", "graphics", 3], ["theme", "bg", "graphics", 3],
 ];
 
-export function contrastChecks(c) {
-  const d = derive(c);
-  return CONTRAST_RULES.map(([a, b, kind, min]) => ({ a, b, kind, min, ratio: contrast(d[a], d[b]) }));
+export function contrastChecks(c, schema = 1) {
+  const d = derive(c, schema);
+  const checks = schema === 2 ? [...CONTRAST_RULES, ["rec", "bg", "graphics", 3], ["bg", "rec", "text", 4.5]] : CONTRAST_RULES;
+  const name = (role) => schema === 2 ? ({ theme: "identity", accent: "secondary", rec: "primary" }[role] || role) : role;
+  return checks.map(([a, b, kind, min]) => ({ a: name(a), b: name(b), kind, min, ratio: contrast(d[a], d[b]) }));
 }
 
-export function contrastWarnings(c) { return contrastChecks(c).filter((x) => x.ratio < x.min); }
+export function contrastWarnings(c, schema = 1) { return contrastChecks(c, schema).filter((x) => x.ratio < x.min); }
 
 /* Never round a failing value up to the advertised minimum. Classification uses the unrounded ratio. */
 export function contrastLabel(ratio) { return (Math.floor(ratio * 100) / 100).toFixed(2) + ":1"; }

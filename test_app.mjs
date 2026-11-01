@@ -1113,6 +1113,7 @@ function dir0() { return mkdtempSync(join(tmpdir(), "felucca-tokens-")); }
 }
 
 await import("./test_settings.mjs");
+await import("./test_palette_schema.mjs");
 
 // Keep the independent firmware-byte regression in the customary app test entry point.
 await import("./test_project_import.mjs");

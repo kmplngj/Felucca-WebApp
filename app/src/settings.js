@@ -12,7 +12,7 @@ import { MENU_ICON, MENU_TAB_ICON } from "./paramicons.js";
 import { knownLayout } from "./device.js";
 import { LANGS, getLang, setLang, t } from "./text.js";
 import { midiLearn } from "./proto.js";
-import { BUILTIN, ROLES, derive, fromHex, hex, contrastWarnings, contrastLabel } from "./palette.js";
+import { builtins, roles, derive, fromHex, hex, contrastWarnings, contrastLabel } from "./palette.js";
 
 /* the site has the emulator beside the editor (make_site.py --try) */
 /* (content "1": the release's emulator; "next": a preview of the next version) */
@@ -29,6 +29,7 @@ export function applyEditorPrefs() {
 export function settingsScreen(root, ui) {
   const rows = new Map(), menuRows = new Map();
   let dev = null;
+  let paletteCleanup = null;
 
   function globals() {
     const g = LAYOUT(dev.info.pe0).find((x) => x.place === "settings");
@@ -134,14 +135,21 @@ export function settingsScreen(root, ui) {
     return c;
   }
 
-  /* CUSTOM, the user's palette (1.6, INFO 45 01 5): five colours (BG SURF TEXT THEME ACCENT), shown on the device as they
+  /* CUSTOM: negotiated legacy/native roles, shown on the device as they
      change (op 0: RAM only), stored with SAVE (op 1: the palette in use from then on, saved with the settings), gone with
      REMOVE. The sample is what the device derives from them (palette.js, the port of gfx.c); colours that are hard to read (the
      derived text/graphics contrast) get a warning, nothing more: they are shown and saved as chosen (REMOVE and COLOR are the way back) */
   function paletteCard() {
     if (!dev.info.customPalette || !dev.palette) return null;
-    const P = dev.palette;
+    const owner = dev, P = owner.palette;
+    const schema = P.schema, ROLES = roles(schema), BUILTIN = builtins(schema);
     let c = P.c.slice(), t0 = 0, timer = 0, sent = "";
+    let disposed = false, offClose;
+    const sameSession = () => dev === owner && !owner.closed && owner.palette?.schema === schema;
+    const current = () => !disposed && sameSession();
+    const cancel = () => { clearTimeout(timer); timer = 0; };
+    paletteCleanup = () => { disposed = true; cancel(); if (offClose) offClose(); };
+    offClose = owner.on("closed", paletteCleanup);
     const inputs = ROLES.map((role, i) => el("input", { type: "color", class: "colour", "aria-label": role, value: hex(c[i]), oninput: (e) => { c[i] = fromHex(e.target.value); changed(); } }));
     const demo = el("div", { class: "paldemo", "aria-hidden": "true" },
       el("div", { class: "pd-card" }, el("b", { class: "pd-text", text: "FELUCCA" }), el("span", { class: "pd-mid", text: "TRACK 1 · 120 BPM" }),
@@ -150,9 +158,9 @@ export function settingsScreen(root, ui) {
     const warn = el("div", { class: "palwarn", role: "status", "aria-atomic": "true" });
     const say = (rc) => ui.prefResult(rc);
     function paint() {
-      const d = derive(c), css = (x) => hex(x);
+      const d = derive(c, schema), css = (x) => hex(x);
       demo.style.cssText = `--pbg:${css(d.bg)};--psurf:${css(d.surf)};--ptext:${css(d.text)};--ptheme:${css(d.theme)};--pacc:${css(d.accent)};--pmid:${css(d.mid)};--pdim:${css(d.dim)};--psel:${css(d.sel)};--pink:${css(d.ink)};--prec:${css(d.rec)};--pkey:${css(d.key)};--praise:${css(d.raise)};`;
-      const u = contrastWarnings(c);
+      const u = contrastWarnings(c, schema);
       warn.replaceChildren(...(u.length ? [el("p", { text: t("paletteContrast") }),
         ...[["text", "paletteTextContrast"], ["graphics", "paletteGraphicsContrast"]].flatMap(([kind, label]) => {
           const rows = u.filter((x) => x.kind === kind);
@@ -164,18 +172,26 @@ export function settingsScreen(root, ui) {
     }
     /* the device shows it at once, at most every 120 ms (the last one always goes) */
     function changed() {
+      if (!current()) return;
       paint();
       if (!live.checked) return;
-      const go = async () => { timer = 0; t0 = Date.now(); const key = c.join(); if (key === sent) return; sent = key; await dev.paletteSet(0, c.slice()); };
+      const go = async () => { timer = 0; if (!current() || !live.checked) return; t0 = Date.now(); const key = c.join(); if (key === sent) return; sent = key; await owner.paletteSet(0, c.slice()); };
       const wait = Math.max(0, 120 - (Date.now() - t0));
       if (!timer) timer = setTimeout(go, wait);
     }
     const live = el("input", { type: "checkbox", checked: true, "aria-label": t("palettePreview") });
     const from = el("select", { "aria-label": t("paletteFrom"), onchange: (e) => { if (e.target.value === "") return; c = BUILTIN[+e.target.value].c.slice(); e.target.value = ""; changed(); } },
       el("option", { value: "", text: t("paletteFrom") }), ...BUILTIN.map((b, i) => el("option", { value: i, text: b.name })));
-    const save = el("button", { type: "button", class: "btn primary", onclick: async () => { say(await dev.paletteSet(1, c.slice())); } }, ic("symbol_check"), t("paletteSave"));
-    const revert = el("button", { type: "button", class: "btn", onclick: async () => { await dev.paletteSet(3); sent = ""; c = dev.palette.c.slice(); paint(); } }, ic("control_arrow_loop"), t("paletteRevert"));
-    const remove = el("button", { type: "button", class: "btn", disabled: !P.stored, onclick: async () => { if (await ui.confirm(`${t("paletteRemove")}?`)) { say(await dev.paletteSet(2)); c = dev.palette.c.slice(); sent = ""; paint(); } } }, ic("symbol_trash"), t("paletteRemove"));
+    const save = el("button", { type: "button", class: "btn primary", onclick: async () => {
+      if (!current()) return; cancel(); const rc = await owner.paletteSet(1, c.slice()); if (sameSession()) say(rc);
+    } }, ic("symbol_check"), t("paletteSave"));
+    const revert = el("button", { type: "button", class: "btn", onclick: async () => {
+      if (!current()) return; cancel(); await owner.paletteSet(3); if (!current()) return; sent = ""; c = owner.palette.c.slice(); paint();
+    } }, ic("control_arrow_loop"), t("paletteRevert"));
+    const remove = el("button", { type: "button", class: "btn", disabled: !P.stored, onclick: async () => {
+      if (!current() || !await ui.confirm(`${t("paletteRemove")}?`) || !current()) return;
+      cancel(); const rc = await owner.paletteSet(2); if (sameSession()) say(rc); if (!current()) return; c = owner.palette.c.slice(); sent = ""; paint();
+    } }, ic("symbol_trash"), t("paletteRemove"));
     const out = card(t("customPalette"), "symbol_eye",
       el("div", { class: "palrows" }, ...ROLES.map((role, i) => el("label", { class: "palrow" }, el("span", { class: "lbl", text: role }), inputs[i]))),
       demo, warn,
@@ -218,6 +234,8 @@ export function settingsScreen(root, ui) {
 
   return {
     show(device) {
+      if (paletteCleanup) paletteCleanup();
+      paletteCleanup = null;
       dev = device;
       rows.clear(); menuRows.clear();
       const grid = el("div", { class: "grid" });
