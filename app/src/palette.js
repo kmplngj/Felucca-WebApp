@@ -78,7 +78,7 @@ const CONTRAST_RULES = [
 
 export function contrastChecks(c, schema = 1) {
   const d = derive(c, schema);
-  const checks = schema === 2 ? [...CONTRAST_RULES, ["rec", "bg", "graphics", 3], ["bg", "rec", "text", 4.5]] : CONTRAST_RULES;
+  const checks = schema === 2 ? [...CONTRAST_RULES.filter(([a, b]) => a !== "surf" && b !== "surf"), ["rec", "bg", "graphics", 3], ["bg", "rec", "text", 4.5]] : CONTRAST_RULES;
   const name = (role) => schema === 2 ? ({ theme: "identity", accent: "secondary", rec: "primary" }[role] || role) : role;
   return checks.map(([a, b, kind, min]) => ({ a: name(a), b: name(b), kind, min, ratio: contrast(d[a], d[b]) }));
 }

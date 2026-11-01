@@ -18,6 +18,7 @@ node test_settings.mjs      # MENU replies, sparse IDs; FELUCCA_ROOT adds actual
 node test_menu_order.mjs    # ordered MENU writes during background work, transport failure and close
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
 node test_palette_schema.mjs # same-version old/new CUSTOM negotiation, fallback and exact write semantics
+node test_aftertouch_schema.mjs # 114 descriptors/VOICE3 and retained 111 editing
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
 node test_backup.mjs        # the full backup
 node test_project_import.mjs # firmware project bytes, import/restore compatibility guards
@@ -269,7 +270,10 @@ Migrate button: use this mock, or Files with a genuine older original and its ma
 Files remains inside the capability-gated STORED card, so offline conversion requires that mock or a connected
 compatible device. It never requires writing an old fixture into hardware.
 
-Migration targets the current standard profile (111 parameters and matching playable engine IDs). Other profiles
+Migration targets the current standard profile (114 parameters, P_E0 106, 16 engine slots and matching playable engine IDs).
+Ordinary editing, original downloads and old-format library imports remain available on earlier firmware, including 111-parameter
+builds. The migration action keeps its exact-target policy: it is unavailable on 111-parameter firmware, because the converter now
+writes 114 parameters. Other profiles
 can still download originals, but conversion is disabled with a target-mismatch explanation. Legacy FUN1..FUN9 and
 older-count FUN10 projects plus supported user-preset records can convert to files. A full-count FUN10 file opened
 without a manifest is also LEGACY when its header still requests the old GM drum-part or PHYS conversion
@@ -285,11 +289,31 @@ not the older classifier on firmware main. `node test_legacy.mjs` covers the hea
 offline Files actions without a device. For its additional native comparison, set
 `FELUCCA_CODEC_ROOT=/path/to/Felucca-at-00253c4970815a4c90fac92cf318cebeb5adf805` before that command. This separate
 oracle requires that clean PR594 checkout, its exact Engines submodule and generated standard headers in `build/gen`;
-it compiles the existing native probe and checks all 25 header cases plus count/hash refusals. It is independent of
+it compiles the existing native probe and checks all 25 historical 111-parameter header cases plus count/hash refusals using
+the preserved `test_fixtures/legacy/header111.json` input. The normal suite separately applies those checks to 114-parameter files. It is independent of
 `FELUCCA_ROOT`, which retains the ordinary firmware tables/vectors/corpus comparison, including byte-exact converted
 outputs; its corpus check explicitly accepts older native CURRENT labels for these full-count legacy headers.
 No target image is required
 for the header probe, and it does not establish hardware or upload acceptance.
+
+The 114-parameter tables and vectors were regenerated against
+[`kmplngj/Felucca@bca6e993345287c9c82004f81047f1dcf48ae9f8`](https://github.com/kmplngj/Felucca/commit/bca6e993345287c9c82004f81047f1dcf48ae9f8)
+with the documented `gen_legacy.c` commands. The existing historical inputs remain covered, including an explicit 111-parameter
+project; new AT/ATDST/ATAMT fields default to zero and E0–E7 move to 106–113. To reproduce from a clean, generated standard producer:
+
+```sh
+cc -O1 -w -I"$FELUCCA_ROOT/build/gen" -I"$FELUCCA_ROOT/firmware/src" -I"$FELUCCA_ROOT/tests" \
+  -o build/gen_legacy gen_legacy.c -lm
+build/gen_legacy tables 'kmplngj/Felucca bca6e993345287c9c82004f81047f1dcf48ae9f8' > app/src/legacy_tables.js
+build/gen_legacy vectors > legacy_vectors.json
+FELUCCA_ROOT="$FELUCCA_ROOT" node test_legacy.mjs
+```
+
+The shared 114 mock descriptors follow upstream aftertouch commit
+[`1d431e4d206464d98cefd1e35107c0aaeabe20ee`](https://github.com/hugelton/Felucca/commit/1d431e4d206464d98cefd1e35107c0aaeabe20ee).
+The default mock now exposes 114 parameters; `makeMockDevice({pcount:111})` retains earlier editing coverage.
+`gen_tokens.py` also adapts the native five-colour source layout while keeping the editor-owned LIGHT palette and
+monochrome active-control colours. Its generated CSS and every text contrast check remain verified against the producer.
 
 ## Licence
 

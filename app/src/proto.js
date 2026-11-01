@@ -1827,8 +1827,10 @@ function makeMockDevice(opt = {}) {
     D("SPRD", F.PCT, 0, 127, 0),   /* SPREAD (95, #148) */
     E("INSRT", ["OFF", "SOFT", "HARD", "FOLD", "FUZZ", "CRUSH", "PHASR", "FLANG", "CHOR"], 0),   /* 1.5: the INSERT (96..100) */
     D("INS A", F.PCT, 0, 127, 64), D("INS B", F.PCT, 0, 127, 96), D("INS C", F.PCT, 0, 127, 96), D("MIX", F.PCT, 0, 127, 127),
-    E("TYPE", ["LP", "BP", "HP"], 0), E("ESYNC", ["OFF", "ON"], 0));   /* 1.5: ANALOG's filter TYPE (101, #104), ENV SYNC (102, #175) */
-  const P_COUNT = 111, G_COUNT = 27, NSTEP = 64, P_E0 = 103, G_ENGSEL = 20, P_SLCR = 45;
+    E("TYPE", ["LP", "BP", "HP"], 0), E("ESYNC", ["OFF", "ON"], 0),   /* 1.5: filter TYPE and ENV SYNC */
+    ...(opt.pcount === 111 ? [] : [E("AT", ["OFF", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"], 0), E("ATDST", MDST, 0),
+      D("ATAMT", F.BIPCT, -64, 63, 0)]));   /* 1.8: AFTERTOUCH 103..105; explicit older111 mock retained */
+  const P_COUNT = opt.pcount === 111 ? 111 : 114, G_COUNT = 27, NSTEP = 64, P_E0 = P_COUNT - 8, G_ENGSEL = 20, P_SLCR = 45;
   const MOTION_MAX = 128;                           /* motion records shared by the tracks (1.2; 64 before) */
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const enumOrig = (d, v) => d.fmt === F.ENUM && d.names ? aliasOf(d.names, v - d.min) + d.min : v;   /* params.c enum_orig */

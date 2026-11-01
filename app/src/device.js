@@ -13,7 +13,7 @@ export const isFelucca = (p) => /felucca/i.test(p.name || "") && p.state !== "di
 export const P = { LEVEL: 0, SLEN: 29 };
 /* the layouts this editor knows (P_COUNT, P_E0 with G_COUNT 27; editor.html knownLayout) */
 export const knownLayout = (info) => info.gcount === 27 &&
-  [[111, 103], [104, 96], [99, 91], [91, 83], [89, 81], [69, 61], [57, 49]].some(([c, e]) => info.pcount === c && info.pe0 === e);
+  [[114, 106], [111, 103], [104, 96], [99, 91], [91, 83], [89, 81], [69, 61], [57, 49]].some(([c, e]) => info.pcount === c && info.pe0 === e);
 export const chordIds = P_CHORD;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

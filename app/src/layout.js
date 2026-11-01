@@ -21,7 +21,7 @@ export const LAYOUT = (pe0, engine) => [
     ...[0, 1, 2, 3].map((k) => [`OP${k + 1}`, 0, [61 + 5 * k, 62 + 5 * k, 63 + 5 * k, 64 + 5 * k]]),
     ["OP LVL", 0, [65, 70, 75, 80]]] }] : []),
   { t: "VOICE", place: "sound", pages: [["LEVEL", 0, [0]], ["VOICE", 0, [37, 38, 41, 42]], ["VOICE 2", 0, [43, 44, 39, 40]],
-    ...(pe0 >= 96 ? [["VOICE 3", 0, [95]]] : [])] },   /* 1.4: SPRD (the device's EDIT > VOICE 3) */
+    ...(pe0 >= 96 ? [["VOICE 3", 0, [95, ...(pe0 >= 106 ? [103, 104, 105] : [])]]] : [])] },   /* 1.4: SPRD (the device's EDIT > VOICE 3) */
   { t: "FX", place: "sound", pages: [["FX", 0, [33, 34, 35, 36]], ["SLICER", 0, [45, 46, 47, 48]],
     ...(pe0 >= 103 ? [["INSERT", 0, [96, 97, 98, 99, 100]]] : []), ["DLY", 1, [4, 5, 6, 7]],   /* (1.5: the track's INSERT, TYPE A B C MIX) */ ["REVERB", 1, [24, 8, 9]], ["CHORUS", 1, [10, 11]]] },
   { t: "SCL", place: "sound", pages: [["SCL", 0, [25, 26, 27, 28]], ...(pe0 >= 83 ? [["CHORD", 0, P_CHORD]] : [])] },

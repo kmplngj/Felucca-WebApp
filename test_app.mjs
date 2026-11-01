@@ -35,7 +35,7 @@ const until = async (cond, ms = 2000) => { const t = Date.now(); while (!cond() 
   d.on("reload", () => seen.reload++);
   d.on("closed", (r) => { seen.closed = r; });
   await d.open();
-  ok(d.loaded && seen.loaded === 1 && d.info.pcount === 111 && d.pdesc.length === 111 && d.gdesc.length === d.info.gcount,
+  ok(d.loaded && seen.loaded === 1 && d.info.pcount === 114 && d.pdesc.length === 114 && d.gdesc.length === d.info.gcount,
     "device: open reads INFO and every DESC");
   ok(seen.progress > d.info.pcount && d.names.length === d.info.nengines && d.steps.length === d.info.nstep,
     "device: NAMES for every engine, every step, progress reported");
@@ -152,7 +152,7 @@ const until = async (cond, ms = 2000) => { const t = Date.now(); while (!cond() 
   await d.open();
   await d.readLearn();
   ok(d.info.midiLearn === 16 && d.learn && d.learn.n === 16 && d.learn.entries.filter((x) => x.used).length === 0, "1.5: MIDI LEARN read (16 entries, none used)");
-  ok(await d.learnSet(74, 1, 103) === 0 && d.learn.entries.some((x) => x.used && x.cc === 74 && x.track === 1 && x.id === 103), "1.5: CC74 -> T2 E1 learned");
+  ok(await d.learnSet(74, 1, 106) === 0 && d.learn.entries.some((x) => x.used && x.cc === 74 && x.track === 1 && x.id === 106), "1.5: CC74 -> T2 E1 learned");
   ok(await d.learnSet(0, 0, 9) === 1, "1.5: a CC the device never learns (CC0): rc 1");
   await d.learnSet(75, 0, 9);
   ok(await d.learnSet(74, 0, null) === 0 && d.learn.entries.filter((x) => x.used).length === 1, "1.5: one CC cleared");
@@ -387,8 +387,8 @@ const until = async (cond, ms = 2000) => { const t = Date.now(); while (!cond() 
   const m = proto.makeMockDevice();
   const d = new Device(m.access);
   await d.open();
-  ok(d.info.locks === 1 && d.info.pcount === 111 && d.info.pe0 === 103 && d.info.motionCap === 128 && d.info.midiLearn === 16 && d.info.nudge === 16 && d.info.songLanes === 4,
-    "locks: INFO 4C 01 01 after the ratchet's, then (1.4) 41 01 00 01, 54 01 16, 57 01 4, (1.5) 43 01 16; P_COUNT 111, P_E0 103");
+  ok(d.info.locks === 1 && d.info.pcount === 114 && d.info.pe0 === 106 && d.info.motionCap === 128 && d.info.midiLearn === 16 && d.info.nudge === 16 && d.info.songLanes === 4,
+    "locks: INFO 4C 01 01 after the ratchet's, then (1.4) 41 01 00 01, 54 01 16, 57 01 4, (1.5) 43 01 16; P_COUNT 114, P_E0 106");
   ok(await d.motionOp(5, { step: 2, param: 9, value: 40 }) === 0 && d.motion.events[0].lock === true, "locks: a lock set, read back as one");
   ok(await d.motionOp(3, { step: 3, param: 10, value: 1 }) === 0 && d.motion.events.find((e) => e.step === 3).lock === false
      && d.motion.events.find((e) => e.step === 2).lock === true, "locks: after an automation edit (op 3) the kinds are read again");
@@ -1114,6 +1114,7 @@ function dir0() { return mkdtempSync(join(tmpdir(), "felucca-tokens-")); }
 
 await import("./test_settings.mjs");
 await import("./test_palette_schema.mjs");
+await import("./test_aftertouch_schema.mjs");
 
 // Keep the independent firmware-byte regression in the customary app test entry point.
 await import("./test_project_import.mjs");

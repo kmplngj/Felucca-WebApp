@@ -117,15 +117,17 @@ assert.equal(native.rec, 0xfa49);
 assert.equal(native.accent, 0x4c7f);
 assert.equal(builtins(2).length, 10);
 assert.ok(builtins(2).every((p) => contrastWarnings(p.c, 2).length === 0));
-assert.equal(contrastWarnings(Array(5).fill(0), 2).length, 11);
+assert.equal(contrastWarnings(Array(5).fill(0), 2).length, 10);
+assert.ok(contrastChecks(Array(5).fill(0), 2).every((x) => x.a !== "surf" && x.b !== "surf"));
 assert.ok(contrastChecks([0, 0xffff, 0xffff, 0, 0xffff], 2).some((x) => x.a === "primary" && x.ratio === 1));
 
-if (process.env.FELUCCA_PALETTES_V2) {
+const paletteSource = process.env.FELUCCA_PALETTES_V2 || process.env.FELUCCA_PALETTES;
+if (paletteSource) {
   const generated = JSON.parse(execFileSync("python3", ["-c", `
 import importlib.util,json,sys
 s=importlib.util.spec_from_file_location('pal',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
 print(json.dumps([dict(name=row[0],c=[p.to565(c,row[0]==p.BW) for c in row[1:]]) for row in p.PALETTES]))
-`, process.env.FELUCCA_PALETTES_V2], { encoding: "utf8" }));
+`, paletteSource], { encoding: "utf8" }));
   assert.deepEqual(PAL_BUILTIN_V2, generated);
 } else console.log("CUSTOM schema2: native producer seed comparison skip (no FELUCCA_PALETTES_V2)");
 console.log("CUSTOM schemas: same-version negotiation, legacy timeout fallback, exact save/preview/revert/remove bytes, primary preservation and schema-aware roles/contrast ok");

@@ -542,7 +542,7 @@ static void rec_make(up_rec_t *r, uint32_t ver, uint8_t e, uint32_t np, const ch
 }
 static void bank_random(up_bank_t *bk, int fixed)
 {
-    static const uint8_t NPS[] = {53, 57, 69, 89, 91, 99, 103, 104, 111};
+    static const uint8_t NPS[] = {53, 57, 69, 89, 91, 99, 103, 104, 111, P_COUNT};
     static const char *const NAMES[] = {"BASS 1", "lead", "PAD SLOW", "A", "KEYS 0123456", "DRUMS"};
     uint32_t i;
     memset(bk, 0, sizeof *bk);
@@ -683,10 +683,11 @@ static void vectors(void)
     }
     /* refusals: FUN10 of more parameters than P_COUNT, an engine byte past the id space, a nudge bit in FUN9 */
     rs = 77;
-    n = rformat_new(b, PROJ_MAGIC, 111);
+    n = rformat_new(b, PROJ_MAGIC, P_COUNT);
     b[66] = (uint8_t)(P_COUNT + 1u);
     seal(b, n);
-    vec_project("FUN10 np 112 (a later firmware's: refused)", "fun10_test.c (more parameters)", b, n);
+    snprintf(nm, sizeof nm, "FUN10 np %u (a later firmware's: refused)", P_COUNT + 1u);
+    vec_project(nm, "fun10_test.c (more parameters)", b, n);
     rs = 78;
     n = rformat_new(b, PROJ_MAGIC_V9, 99);
     b[68] |= 0;
@@ -699,6 +700,11 @@ static void vectors(void)
     seal(b, n);
     vec_project("FUN6 with engine byte 70 (refused)", "engid_test.c (engine past the id space)", b, n);
 
+    /* Preserve the former111-parameter input, now migrated to the current target. */
+    rs = 0x9E3779B9u ^ (12u * 7919u);
+    n = rformat_new(b, PROJ_MAGIC, 111);
+    vec_project("FUN10 np 111 (1.5 .. 1.6)", "gen_legacy.c former current corpus", b, n);
+
     /* the corpus: every format, seeded */
     for (f = 1; f <= 12u; f++)
         for (k = 0; k < 1u; k++) {
@@ -708,7 +714,7 @@ static void vectors(void)
                                  f == 7u ? (k ? 91u : 89u) : f == 8u ? 91u : f == 9u ? 99u : f == 10u ? 103u : f == 11u ? 104u : P_COUNT);
             if (!n) continue;
             snprintf(nm, sizeof nm, "corpus %s #%u", f <= 9u ? (const char *[]){"", "FUN1", "FUN2", "FUN3", "FUN4", "FUN5",
-                     "FUN6", "FUN7", "FUN8", "FUN9"}[f] : f == 10u ? "FUN10 np 103" : f == 11u ? "FUN10 np 104" : "FUN10 np 111", k);
+                     "FUN6", "FUN7", "FUN8", "FUN9"}[f] : f == 10u ? "FUN10 np 103" : f == 11u ? "FUN10 np 104" : "FUN10 current", k);
             vec_project(nm, "gen_legacy.c corpus", b, n);
         }
     printf("\n  ],\n  \"presets\": [\n");
