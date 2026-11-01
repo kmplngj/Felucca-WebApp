@@ -160,9 +160,9 @@ main { grid-row: 2; padding: 4px 16px 24px 4px; min-width: 0; }
 .slot .big { font-size: 1.75rem; font-weight: 600; color: var(--theme); }
 .slot.empty .big { color: var(--mid); font-weight: 400; }
 .slot .acts { display: flex; gap: 4px; }
-.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; }
+.kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 16px; margin: 0; }
 .kv dt { font-size: .75rem; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; color: var(--mid); }
-.kv dd { margin: 0; color: var(--text); }
+.kv dd { margin: 0; color: var(--text); overflow-wrap: anywhere; user-select: text; }
 .wave { display: block; width: 100%; height: 72px; background: var(--bg); border-radius: var(--r-s); }
 .wave .w { fill: var(--theme); }
 .wave .out { fill: color-mix(in srgb, var(--bg) 65%, transparent); }
@@ -189,6 +189,7 @@ dialog .acts { display: flex; gap: 8px; justify-content: flex-end; }
 
 /* ---- narrow ---- */
 @media (max-width: 900px) {
+  .top { flex-wrap: wrap; }
   .mixer { grid-template-columns: repeat(2, 1fr); }
   .slots { grid-template-columns: repeat(2, 1fr); }
 }

@@ -198,10 +198,16 @@ export function settingsScreen(root, ui) {
 
   function system() {
     const i = dev && dev.info;
+    const build = dev && dev.buildIdentity;
     const kv = (k, v) => [el("dt", { text: k }), el("dd", { text: v })];
     return card(t("system"), "symbol_info_o",
       el("dl", { class: "kv" }, ...(i ? [
-        ...kv(t("firmware"), i.version), ...kv(t("sync"), dev.watch ? t("live") : t("polling")),
+        ...kv(t("firmware"), i.version),
+        ...kv(t("commit"), build && build.commit !== "unknown" ? build.commit : t("buildUnavailable")),
+        ...kv(t("prBuild"), build?.pr == null ? t("buildUnavailable") : build.pr || t("prUnreported")),
+        ...kv(t("buildProfile"), build?.profile && build.profile !== "unknown" ? build.profile : t("buildUnavailable")),
+        ...kv(t("buildState"), build ? t(build.dirty ? "buildDirty" : "buildClean") : t("buildUnavailable")),
+        ...kv(t("sync"), dev.watch ? t("live") : t("polling")),
         ...kv(t("engines"), String(i.engines.filter((x) => x !== "-").length)), ...kv(t("tracks"), String(i.ntrk || 1)),
         ...kv(t("stepsN"), String(i.nstep)),
         ...kv(t("samples"), dev.smp ? `${dev.smp.nslots} × ${dev.smp.slotKiB} KiB` : "—"),

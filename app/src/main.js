@@ -182,7 +182,9 @@ function relabel() {
 /* ---- header: state, tracks, flash ---- */
 function drawState() {
   const on = dev && dev.loaded;
-  $("#state-t").textContent = on ? `${dev.watch ? t("live") : t("polling")} · ${dev.info.version.replace(/^FELUCCA\s*/i, "")}` : t("offline");
+  const build = on && dev.buildIdentity;
+  const revision = build && build.commit !== "unknown" ? ` · ${build.commit.slice(0, 8)}${build.dirty ? "-dirty" : ""}` : "";
+  $("#state-t").textContent = on ? `${dev.watch ? t("live") : t("polling")} · ${dev.info.version.replace(/^FELUCCA\s*/i, "")}${revision}` : t("offline");
   $("#state-dot").classList.toggle("off", !on);
 }
 function drawTracks() {
@@ -232,6 +234,9 @@ async function connect() {
   try {
     if (!access) {
       if (MOCK) access = makeMockDevice({ legacy: QS.get("legacy") === "1", catalog: QS.get("catalog") === "1" || QS.get("raw") === "1", test14: QS.get("test14") === "1", omit: QS.has("omit") ? Number(QS.get("omit")) : undefined,
+        controlCaps: QS.get("build") === "extended" ? 7 : QS.get("build") === "legacy" ? 3 : 0,
+        buildIdentity: ["extended", "legacy"].includes(QS.get("build")) && QS.get("legacy") !== "1"
+          ? { commit: "0123456789abcdef0123456789abcdef01234567", dirty: QS.get("dirty") === "1", version: "v1.0 (MOCK)", pr: `PR #${790} head`, profile: "standard" } : undefined,
         rawStore: QS.get("raw") === "1", noUnifiedUI: QS.get("noUnifiedUI") === "1", graph: QS.get("graph") === "1", uiCaps: QS.get("graph") === "1" ? 57 : undefined }).access;   /* (&raw=1: the raw store export of #456, with demo legacy objects) */
       else if (!navigator.requestMIDIAccess) { sayK("nomidi"); return; }
       else { try { access = await navigator.requestMIDIAccess({ sysex: true }); } catch { sayK("denied"); return; } }

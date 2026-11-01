@@ -5,6 +5,7 @@
 // formatting, the user-sample codec, the library formats, the FM6 / FM4 patch tools and the mock device.
 // No DOM. Moved from editor.html (its PROTO-BEGIN .. PROTO-END section); test_web.mjs runs its protocol
 // checks against both (FELUCCA_PROTO=app: this file). Since the move, only the mock has changed, towards the firmware:
+// - #790: optional read-only CONTROL QUERY build identity (INFO 5A 01 caps); no restart/transfer operations
 // - MOTION set / delete refuse (rc 1) a step >= 64, a parameter that cannot be recorded and a value out of range
 // - INFO advertises the full backup (42 01 03) and BACKUP_LIST / GET / PUT answer as the firmware's (opt.noBackup: not)
 // - AUTO OFF: wire17 combined mode/time, WAKE31, conditional 2ND CORE32, ALL DARK33; rc2 timer order refused.
@@ -53,7 +54,7 @@ const CMD = { INFO: 1, GET: 2, SET: 3, DUMP: 4, DESC: 5, STEP_GET: 6, STEP_SET: 
   MOTION: 64, BACKUP_LIST: 65, BACKUP_GET: 66, BACKUP_PUT: 67,
   FM6_GET: 68, FM6_PUT: 69, FM6_LIST: 70, FM6_ERASE: 71, MENU_DESC: 72, MENU_SET: 73,
   FM6B_BEGIN: 74, FM6B_WRITE: 75, FM6B_END: 76, FM6B_LIST: 77, LEARN_GET: 78, LEARN_SET: 79, PALETTE_GET: 80, PALETTE_SET: 81,
-  STORE_LIST: 82, STORE_GET: 83 };
+  STORE_LIST: 82, STORE_GET: 83, CONTROL: 84 };
 /* frames the device sends on its own (while WATCH is on); never replies */
 const PUSH = new Set([CMD.CHANGED, CMD.RELOAD, CMD.STEP_CHANGED, CMD.TRACK_CHANGED]);
 /* user preset bank: name 1..12 printable ASCII, a 16-step pattern of (note, flags 1 acc 2 slide 4 tie) */
@@ -144,9 +145,10 @@ function readEngineCatalog(trailer, info) {
   info.userEngine = info.nengines;
   info.backupExtraCaps = 0;
   info.rawStoreCaps = 0;
+  info.controlCaps = 0;
   if (trailer.length === 1 && trailer[0] !== 0x49 && trailer[0] !== 0x58) return; // historical untagged PR flag
   const lengths = { 0x55: 1, 0x4d: 2, 0x42: 1, 0x46: 2, 0x53: 1, 0x50: 1, 0x4E: 1,
-    0x52: 1, 0x4C: 1, 0x41: 2, 0x54: 1, 0x57: 1, 0x56: 1, 0x43: 1, 0x4B: 1, 0x45: 1, 0x58: 1, 0x59: 1 };
+    0x52: 1, 0x4C: 1, 0x41: 2, 0x54: 1, 0x57: 1, 0x56: 1, 0x43: 1, 0x4B: 1, 0x45: 1, 0x58: 1, 0x59: 1, 0x5A: 1 };
   for (let q = trailer[0] === 16 ? 1 : 0; q < trailer.length;) {
     const tag = trailer[q];
     if (tag === 0x49) {
@@ -167,6 +169,7 @@ function readEngineCatalog(trailer, info) {
     }
     if (tag === 0x58) info.backupExtraCaps = trailer[q + 2] & 7;
     if (tag === 0x59) info.rawStoreCaps = trailer[q + 2] & 1;   /* #456: bit 0 STORE_LIST / STORE_GET (82, 83), read only */
+    if (tag === 0x5A) info.controlCaps = trailer[q + 2] & 7;   /* QUERY, restart (unused), extended identity */
     q += 2 + n;
   }
 }
@@ -180,7 +183,55 @@ const catalogLabel = (info, id) => engineAvailable(info, id) ? info.engines[id] 
 const drumEngine = (info, id) => info.engineCatalog ? id === 10 : info.engines[id] === "DRUM";
 const fm6Engine = (info, id) => info.engineCatalog ? id === 12 : info.engines[id] === "FM6";
 
+/* CONTROL QUERY is the only control operation this editor builds. u32 is canonical five-byte LSB7,
+   not a permissive bitwise decode (the fifth byte may contain only the high four bits). */
+function identityU32(v) {
+  if (!Number.isInteger(v) || v < 0 || v > 0xffffffff) throw new Error("Invalid identity request id");
+  return [0, 7, 14, 21, 28].map((n) => (v >>> n) & 127);
+}
+function parseBuildIdentity(a, extended = false) {
+  const bad = () => { throw new Error("Invalid build identity reply"); };
+  if (!a.every((b) => Number.isInteger(b) && b >= 0 && b <= 127)) bad();
+  const r = new Reader(a);
+  const u32 = () => {
+    const b = [r.b(), r.b(), r.b(), r.b(), r.b()];
+    if (b[4] > 15) bad();
+    return b.reduce((v, x, k) => v + x * 2 ** (7 * k), 0);
+  };
+  const text = (max) => {
+    let s = "";
+    for (;;) {
+      const b = r.b();
+      if (!b) return s;
+      if (b < 32 || b > 126 || s.length === max) bad();
+      s += String.fromCharCode(b);
+    }
+  };
+  if (r.b() !== 0 || r.b() !== 0) bad();
+  const requestId = u32(), generation = u32(), challenge = u32(), uptimeMs = u32(), busy = u32();
+  const dirty = r.b();
+  if (dirty > 1) bad();
+  const commit = text(40), version = text(24);
+  if (!/^(?:[0-9a-f]{40}|unknown)$/.test(commit) || !version) bad();
+  const pr = extended ? text(32) : null, profile = extended ? text(64) : null;
+  if (extended && ((!/^PR #[1-9][0-9]{0,6} (head|merge)$/.test(pr) && pr !== "") || !/^[a-z0-9-]{1,64}$/.test(profile))) bad();
+  if (r.i !== a.length) bad();
+  return { requestId, generation, challenge, uptimeMs, busy, dirty: !!dirty, commit, version, pr, profile };
+}
+let identityRequestId = Date.now() >>> 0;
+async function readBuildIdentity(request, info) {
+  if (!(info.controlCaps & 1)) return null;
+  const requestId = identityRequestId = (identityRequestId + 1) >>> 0, extended = !!(info.controlCaps & 4);
+  try {
+    const a = await request(req.buildIdentity(requestId, extended), { timeout: 300, retries: 0, quiet: true });
+    const identity = parseBuildIdentity(a, extended);
+    if (identity.requestId !== requestId) return null;
+    return identity;
+  } catch (e) { if (e.message === "closed") throw e; return null; }
+}
+
 const parse = {
+  [CMD.CONTROL]: parseBuildIdentity,
   [CMD.INFO](a) {
     const r = new Reader(a);
     const o = { version: r.s(), nengines: r.b(), pcount: r.b(), gcount: r.b(), nstep: r.b(), pe0: r.b(), engines: [] };
@@ -424,6 +475,7 @@ const parse = {
 function upName(s) { return String(s ?? "").replace(/[^\x20-\x7E]/g, "").trim().slice(0, UP.NAME_MAX) || "PATCH"; }
 
 const req = {
+  buildIdentity: (id, extended = false) => [CMD.CONTROL, [0, ...identityU32(id), ...(extended ? [1] : [])]],
   uiState: () => [CMD.UI_STATE, []],
   uiSet: (id, value) => [CMD.UI_SET, [id, value]],
   uiPalettes: () => [CMD.UI_PALETTES, []],
@@ -526,6 +578,7 @@ const req = {
 /* which reply belongs to which request (the device echoes these) */
 function replyMatches(cmd, args, a) {
   switch (cmd) {
+    case CMD.CONTROL: return a.length >= 7 && a[0] === 0 && args[0] === 0 && args.slice(1, 6).every((v, i) => v === a[i + 2]);
     case CMD.MOTION: return a[0] === args[0];
     case CMD.BACKUP_GET: return a[0] === args[0] && a.slice(2, 7).every((v, i) => v === args[i + 1]);
     case CMD.BACKUP_PUT: return a[0] === args[0] && a[1] === args[1];
@@ -2150,7 +2203,7 @@ function makeMockDevice(opt = {}) {
         break;
       }
       case CMD.INFO:
-        s(opt.legacy ? "FELUCCA 0.4 BETA (MOCK)" : "FELUCCA v1.0 (MOCK)"); b(ENG.length); b(P_COUNT); b(G_COUNT); b(NSTEP); b(P_E0);
+        s(opt.buildIdentity?.version || (opt.legacy ? "FELUCCA 0.4 BETA (MOCK)" : "FELUCCA v1.0 (MOCK)")); b(ENG.length); b(P_COUNT); b(G_COUNT); b(NSTEP); b(P_E0);
         (catalogOn ? catalogNames() : ENG.map((e) => e.name)).forEach(s);
         if (!opt.legacy) b(NTRK);
         if (!opt.legacy && !opt.v3 && !opt.v5) {
@@ -2166,7 +2219,18 @@ function makeMockDevice(opt = {}) {
           [0x58, 1, opt.backupExtraCaps || 0].forEach(b);
           if (opt.rawStore) [0x59, 1, 1].forEach(b);   /* #456: the raw store export (82, 83) */
         }
+        if (!opt.legacy && opt.controlCaps) [0x5A, 1, opt.controlCaps & 127].forEach(b);
         break;
+      case CMD.CONTROL: {
+        const caps = opt.legacy ? 0 : (opt.controlCaps || 0) & 7;
+        if (!(caps & 1) || a[0] !== 0 || ![6, 7].includes(a.length) || a[5] > 15 ||
+            (a.length === 7 && (!(caps & 4) || a[6] !== 1))) return null;
+        const identity = opt.buildIdentity || {};
+        [0, 0, ...a.slice(1, 6), ...identityU32(1), ...identityU32(0), ...identityU32(0), ...identityU32(0), identity.dirty ? 1 : 0].forEach(b);
+        s(identity.commit || "unknown"); s(identity.version || "FELUCCA v1.0 (MOCK)");
+        if (a.length === 7) { s(identity.pr || ""); s(identity.profile || "unknown"); }
+        break;
+      }
       case CMD.GET: case CMD.SET: {
         if (a.length < 2) return null;
         const d = desc(a[0], a[1]);
@@ -2738,7 +2802,7 @@ function devicePresetRows(info, names, preferences) {
 
 /*PROTO-END*/
 export {
-  readEngineCatalog, engineAvailable, userEngine, catalogLabel, fm6Engine,
+  readBuildIdentity, parseBuildIdentity, readEngineCatalog, engineAvailable, userEngine, catalogLabel, fm6Engine,
   HDR, CMD, PUSH, UP, F, v14enc, v14dec, strEnc, frame, unframe,
   LANES, LANE_NOTE, LANE_OF, LANE_ALIAS, drumLane, stepLanes, stepAccents, hitsText, parseHits, hitsEnc,
   readHits, Reader, parse, upName, req, replyMatches, Link, NOTE_NAMES, noteName, parseNote,
