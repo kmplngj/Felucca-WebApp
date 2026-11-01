@@ -22,7 +22,7 @@
 // Not ported yet (RULES below; an object of these kinds is reported, never converted): settings PER1..PER6
 // (settings_import), the retired FM6 patch bank (upf_migrate), re-linking an FM6 user preset's patch in the user presets'
 // FM6 patches (upf_tag of a converted record), the autosave's sizes other than FUN10, and targets other than the
-// standard engine catalog of P_COUNT 111.
+// standard engine catalog of P_COUNT 114.
 
 import { T } from "./legacy_tables.js";
 import { FM4, FM6 } from "./proto.js";
@@ -41,7 +41,7 @@ export const STORE_TYPES = {
 };
 /* the conversion rules of docs/legacy-formats.md section 4 and whether this library has them */
 export const RULES = [
-  { id: "project", label: "Project FUN1..FUN9, FUN10 np 103 / 104 -> FUN10", ported: true, ref: "project.c proj_fetch" },
+  { id: "project", label: "Project FUN1..FUN9, FUN10 np 103 / 104 / 111 -> FUN10", ported: true, ref: "project.c proj_fetch" },
   { id: "params", label: "Parameter count remap (projects, presets)", ported: true, ref: "core.h params_by_count" },
   { id: "retired", label: "Retired sounds: DIGITAL -> FM6, SAMPLE PERC / PHYS DRUM -> DRUM, PHYS DUST", ported: true,
     ref: "fm4_convert.c, core.h drum_from_perc / drum_from_phys, eng_phys.c phys_legacy" },

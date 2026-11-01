@@ -13,7 +13,7 @@ export const isFelucca = (p) => /felucca/i.test(p.name || "") && p.state !== "di
 export const P = { LEVEL: 0, SLEN: 29 };
 /* the layouts this editor knows (P_COUNT, P_E0 with G_COUNT 27; editor.html knownLayout) */
 export const knownLayout = (info) => info.gcount === 27 &&
-  [[111, 103], [104, 96], [99, 91], [91, 83], [89, 81], [69, 61], [57, 49]].some(([c, e]) => info.pcount === c && info.pe0 === e);
+  [[114, 106], [111, 103], [104, 96], [99, 91], [91, 83], [89, 81], [69, 61], [57, 49]].some(([c, e]) => info.pcount === c && info.pe0 === e);
 export const chordIds = P_CHORD;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -581,7 +581,16 @@ export class Device {
      {stored, active, c: [RGB565 x 5]} (not pushed: read when settings show and after each change) */
   async readPalette() {
     if (!this.info.customPalette) { this.palette = null; return null; }
-    try { this.palette = parse[CMD.PALETTE_GET](await this.rq(req.paletteGet())); } catch (e) { if (e.message === "closed") throw e; this.palette = null; }
+    try {
+      let raw;
+      try { raw = await this.rq(req.paletteGet(2), { quiet: true, retries: 0 }); }
+      catch (e) {
+        if (e.message === "closed") throw e;
+        // Released forks reject GET arguments; earlier donors ignore them.
+        raw = await this.rq(req.paletteGet());
+      }
+      this.palette = parse[CMD.PALETTE_GET](raw);
+    } catch (e) { if (e.message === "closed") throw e; this.palette = null; }
     this.emit("palette", this.palette);
     return this.palette;
   }
@@ -589,8 +598,12 @@ export class Device {
      3 not saved, 4 saved at STOP; any colours are taken: the editor warns); a stored or removed palette changes COLOR's values: the lists follow */
   paletteSet(op, c) {
     return this.op(async () => {
-      const r = parse[CMD.PALETTE_SET](await this.rq(req.paletteSet(op, c), op === 1 || op === 2 ? FLASH_OPT : undefined));
-      this.palette = { stored: r.stored, active: r.active, n: r.n, c: r.c };      /* (no event: the card is not rebuilt while a colour is dragged) */
+      if (!this.palette) await this.readPalette();
+      if (!this.palette) throw new Error("palette unavailable");
+      const schema = this.palette.schema;
+      const r = parse[CMD.PALETTE_SET](await this.rq(req.paletteSet(op, c, schema), op === 1 || op === 2 ? FLASH_OPT : undefined));
+      if (r.schema !== schema) { this.palette = null; throw new Error("palette schema changed"); }
+      this.palette = { stored: r.stored, active: r.active, schema: r.schema, n: r.n, c: r.c };      /* (no event: the card is not rebuilt while a colour is dragged) */
       if ((op === 1 || op === 2) && (r.rc === 0 || r.rc === 3 || r.rc === 4)) await this.syncPreferences(true);
       return r.rc;
     });

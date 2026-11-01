@@ -52,7 +52,20 @@ TOKENS = [("bg", "bg"), ("surf", "surf"), ("text", "text"), ("theme", "theme"), 
 def palette(name):
     for p in gp.PALETTES + EDITOR_PALETTES:
         if p[0] == name:
-            d = gp.derive(p)[1]
+            native_five = "SURF" in gp.PCT
+            if native_five and name == LIGHT:
+                # LIGHT is editor-owned BG/SURF/TEXT/THEME/ACCENT, independent of
+                # the native five. Adapt its inputs, retaining its existing SURF.
+                _, bg, surf, text, theme, accent = p
+                d = gp.derive((name, bg, theme, text, accent, accent))[1]
+                d["surf"] = gp.to565(surf)
+                d["raise_"] = gp.mix(d["surf"], d["text"], gp.RAISE_PCT)
+            else:
+                d = gp.derive(p)[1]
+                if native_five:
+                    # Native GREY now has a blue SECONDARY. The editor remains
+                    # monochrome; use its text colour for the active control.
+                    d["accent"] = d["text"]
             d["rec"] = d["accent"]             # grey palettes: REC is ACCENT (as GREY on the device)
             return d
     raise SystemExit(f"no palette {name}")

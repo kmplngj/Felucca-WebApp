@@ -69,7 +69,7 @@ checkVectors(vectors, "vectors");
 /* PR594's codec classification (00253c4970815a4c90fac92cf318cebeb5adf805,
    project_codec.c proj_classify): a full-count FUN10 still needs its pre-1.0 header conversions
    when parts != NPART or phys < PROJ_PHYS. Larger phys bytes are already current. */
-const currentProject = B(vectors.projects.find((p) => p.name === "corpus FUN10 np 111 #0").out);
+const currentProject = B(vectors.projects.find((p) => p.name === "corpus FUN10 current #0").out);
 const repairProjectHash = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength)
   .setUint32(b.length - 4, fnv1a(b, b.length - 4), true);
 const headerCases = [];
@@ -104,7 +104,7 @@ for (const parts of [0, 3, T.NPART, 5, 255]) for (const phys of [0, 1, T.PROJ_PH
   }
   ok(true, "FUN10 old PHYS headers use the existing DUST and DRUM conversions");
 }
-const invalidHeaderCases = [0, 7, 112, 127].map((np) => {
+const invalidHeaderCases = [0, 7, T.P_COUNT + 1, 127].map((np) => {
   const bytes = currentProject.slice(); bytes[63] = 0; bytes[64] = 0; bytes[66] = np; repairProjectHash(bytes);
   return { bytes, state: "unknown" };
 });
@@ -173,11 +173,11 @@ ok(true, "FUN10 old headers do not bypass count or hash refusals");
   const fmts = new Set(vectors.projects.map((p) => projectFormat(B(p.in)).fmt));
   ok([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].every((f) => fmts.has(f)), "vectors: every project format FUN1..FUN10");
   const refusal = (name) => { const p = vectors.projects.find((x) => x.name.startsWith(name)); try { migrateProject(B(p.in)); return "converted"; } catch (e) { return e.code; } };
-  ok(refusal("FUN10 np 112") === "newer", "a later firmware's FUN10 (np 112): refused as newer, not converted");
+  ok(refusal(`FUN10 np ${T.P_COUNT + 1}`) === "newer", "a later firmware's FUN10: refused as newer, not converted");
   ok(refusal("FUN3 with a damaged hash") !== "converted", "a damaged project: refused");
   const fun1 = vectors.projects.find((x) => x.name.startsWith("FUN1 ")), r = migrateProject(B(fun1.in));
   ok(r.from.fmt === 1 && r.to.fmt === 10 && r.bytes.length === 3840 && r.log.length > 0 && r.tracks.length === 4 && !r.same,
-    "FUN1 -> FUN10 of 111 with a report (log, tracks)");
+    `FUN1 -> FUN10 of ${T.P_COUNT} with a report (log, tracks)`);
   const again = migrateProject(r.bytes);
   ok(again.same && same(again.bytes, r.bytes), "a migrated project migrates to itself (already current)");
   const bank = vectors.presets[0], u = migrateUserBank(B(bank.in));
@@ -187,7 +187,7 @@ ok(true, "FUN10 old headers do not bypass count or hash refusals");
   ok(e instanceof MigrationError && e.code === "notPorted" && ruleFor(7) === null && ruleFor(8) === null && ruleFor(32) === null,
     "settings, FM6 banks: no conversion ported, reported as such");
   ok(RULES.some((x) => !x.ported) && RULES.filter((x) => x.ported).length >= 5 && STORE_TYPES[9] === "AUTOSAVE", "rules: what is ported and what is not");
-  ok(targetMismatch({ pcount: 111 }) === "" && /104/.test(targetMismatch({ pcount: 104 })), "target: only firmware of the same schema gets MIGRATE");
+  ok(targetMismatch({ pcount: T.P_COUNT }) === "" && /111/.test(targetMismatch({ pcount: 111 })) && /104/.test(targetMismatch({ pcount: 104 })), "target: only firmware of the same schema gets MIGRATE");
 }
 
 /* Current raw-reader contract, including empty tombstones and changed repeated metadata. */
@@ -217,7 +217,7 @@ for (const file of [{ ...rawFile, objects: [] }, { ...rawFile, objects: [...rawF
 for (const fmt of [7, 8, 9, 10]) {
   const p = vectors.projects.find((p) => projectFormat(B(p.in)).fmt === fmt && p.out);
   assert(p);
-  for (const np of [0, 7, 112, 127]) {
+  for (const np of [0, 7, T.P_COUNT + 1, 127]) {
     const b = B(p.in); b[66] = np;
     new DataView(b.buffer).setUint32(b.length - 4, fnv1a(b, b.length - 4), true);
     assert.equal(projectFormat(b).state, "unknown", `FUN${fmt} count ${np}`);
@@ -403,7 +403,22 @@ if (codec) {
   const temp = mkdtempSync(join(tmpdir(), "felucca-codec-header-"));
   try {
     const exe = compileLegacy(codec, temp);
-    for (const { bytes, state } of [...headerCases, ...invalidHeaderCases]) {
+    const historical = JSON.parse(readFileSync(join(HERE, "test_fixtures/legacy/header111.json"), "utf8"));
+    assert.equal(historical.P_COUNT, 111);
+    const codec111Cases = [];
+    for (const parts of [0, 3, T.NPART, 5, 255]) for (const phys of [0, 1, T.PROJ_PHYS, 3, 255]) {
+      const bytes = B(historical.project); bytes[63] = parts; bytes[64] = phys; repairProjectHash(bytes);
+      codec111Cases.push({ bytes, state: parts === T.NPART && phys >= T.PROJ_PHYS ? "current" : "legacy" });
+    }
+    for (const np of [0, 7, 112, 127]) {
+      const bytes = B(historical.project); bytes[63] = 0; bytes[64] = 0; bytes[66] = np; repairProjectHash(bytes);
+      codec111Cases.push({ bytes, state: "unknown" });
+    }
+    for (const state of ["current", "legacy"]) {
+      const bytes = codec111Cases.find((x) => x.state === state).bytes.slice(); bytes[bytes.length - 1] ^= 1;
+      codec111Cases.push({ bytes, state: "unknown" });
+    }
+    for (const { bytes, state } of codec111Cases) {
       assert.equal(STATES[Number(execFileSync(exe, ["classify"], { input: bytes, encoding: "utf8" }).trim())], state);
     }
     ok(true, `codec ${revision.slice(0, 7)}: 25 headers and 6 count/hash refusals match the native classifier`);
@@ -440,7 +455,7 @@ for(uint32_t k=5;k<n-1;k++) printf("%s%u",k==5?"":",",host_wire[k]); puts("]"); 
     for (const w of invalidManifests) assert.throws(() => reference.rawManifest(w));
     for (const fmt of [7, 8, 9, 10]) {
       const p = vectors.projects.find((p) => projectFormat(B(p.in)).fmt === fmt && p.out);
-      for (const np of [0, 7, 112, 127]) {
+      for (const np of [0, 7, T.P_COUNT + 1, 127]) {
         const b = B(p.in); b[66] = np;
         new DataView(b.buffer).setUint32(b.length - 4, fnv1a(b, b.length - 4), true);
         assert.equal(projectFormat(b).state, STATES[Number(execFileSync(exe, ["classify"], { input: b, encoding: "utf8" }).trim())]);

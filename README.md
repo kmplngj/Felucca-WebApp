@@ -17,6 +17,8 @@ python3 serve.py            # http://localhost:8766/app/index.html?mock=1
 node test_settings.mjs      # MENU replies, sparse IDs; FELUCCA_ROOT adds actual native settings/backup checks
 node test_menu_order.mjs    # ordered MENU writes during background work, transport failure and close
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
+node test_palette_schema.mjs # same-version old/new CUSTOM negotiation, fallback and exact write semantics
+node test_aftertouch_schema.mjs # 114 descriptors/VOICE3 and retained 111 editing
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
 node test_backup.mjs        # the full backup
 node test_project_import.mjs # firmware project bytes, import/restore compatibility guards
@@ -190,6 +192,28 @@ Warnings never block saving or alter colours, stored bytes, live-preview command
 Open `http://localhost:8774/test_fixtures/menu/palette.html` for the mock-only live-warning, save-byte,
 preview/revert and language regression; it must report PASS. Real FM-1 palette/readability checks remain separate.
 
+CUSTOM also supports the explicit native five-colour schema: BG, IDENTITY (color2), TEXT,
+PRIMARY (REC/warnings) and SECONDARY (active control). Settings asks `PALETTE_GET 2` and uses this order
+only when reply flag bit 2 (`4`) is present. A legacy reply uses BG, SURF, TEXT, THEME, ACCENT;
+if the firmware rejects or times out on the probe, Settings retries the original argument-free GET.
+The reported firmware version and parameter count do not select a schema. Unsupported or malformed replies
+leave CUSTOM unavailable, preventing writes with an unknown order.
+
+Only a negotiated native reply enables SET operations 16–19 (preview, store, remove, revert).
+Legacy connections retain operations 0–3. Native seeds copy the upstream 1.8 five-colour values from
+[`hugelton/Felucca@75a8c674`](https://github.com/hugelton/Felucca/blob/75a8c67458c12dac31330934315f7617c75a1a42/tools/gen_ui_palettes.py),
+GPL-3.0-only; earlier firmware keeps its original seeds. The native preview follows the fork's Direction A
+surface and independent PRIMARY colour, including PRIMARY contrast warnings; warnings remain non-blocking.
+The original CI firmware pin and baseline mock remain unchanged. An explicit
+`app/index.html?mock=1&paletteschema=2` selects the new mock contract; `test_fixtures/menu/palette-schema.html`
+checks same-version legacy/native reconnects, labels, seeds, primary colour, live preview, save/revert/remove
+and language changes. Both palette fixtures must report PASS. For a producer seed comparison, run
+`FELUCCA_PALETTES_V2=/path/to/Felucca/tools/gen_ui_palettes.py node test_palette_schema.mjs`.
+
+`make_site.py` bundles `app/index.html` on each build. For a local reviewable single page, run
+`python3 bundle.py app/index.html build/editor.html`; `editor.html` remains the retained classic editor.
+These changes do not update an already hosted site or the firmware repository's pinned WebApp revision.
+
 ## Engine catalogs and backup compatibility
 
 Both editors read the versioned engine catalog (`INFO 49 01`) and use the advertised user-favourite marker
@@ -246,7 +270,10 @@ Migrate button: use this mock, or Files with a genuine older original and its ma
 Files remains inside the capability-gated STORED card, so offline conversion requires that mock or a connected
 compatible device. It never requires writing an old fixture into hardware.
 
-Migration targets the current standard profile (111 parameters and matching playable engine IDs). Other profiles
+Migration targets the current standard profile (114 parameters, P_E0 106, 16 engine slots and matching playable engine IDs).
+Ordinary editing, original downloads and old-format library imports remain available on earlier firmware, including 111-parameter
+builds. The migration action keeps its exact-target policy: it is unavailable on 111-parameter firmware, because the converter now
+writes 114 parameters. Other profiles
 can still download originals, but conversion is disabled with a target-mismatch explanation. Legacy FUN1..FUN9 and
 older-count FUN10 projects plus supported user-preset records can convert to files. A full-count FUN10 file opened
 without a manifest is also LEGACY when its header still requests the old GM drum-part or PHYS conversion
@@ -262,11 +289,31 @@ not the older classifier on firmware main. `node test_legacy.mjs` covers the hea
 offline Files actions without a device. For its additional native comparison, set
 `FELUCCA_CODEC_ROOT=/path/to/Felucca-at-00253c4970815a4c90fac92cf318cebeb5adf805` before that command. This separate
 oracle requires that clean PR594 checkout, its exact Engines submodule and generated standard headers in `build/gen`;
-it compiles the existing native probe and checks all 25 header cases plus count/hash refusals. It is independent of
+it compiles the existing native probe and checks all 25 historical 111-parameter header cases plus count/hash refusals using
+the preserved `test_fixtures/legacy/header111.json` input. The normal suite separately applies those checks to 114-parameter files. It is independent of
 `FELUCCA_ROOT`, which retains the ordinary firmware tables/vectors/corpus comparison, including byte-exact converted
 outputs; its corpus check explicitly accepts older native CURRENT labels for these full-count legacy headers.
 No target image is required
 for the header probe, and it does not establish hardware or upload acceptance.
+
+The 114-parameter tables and vectors were regenerated against
+[`kmplngj/Felucca@bca6e993345287c9c82004f81047f1dcf48ae9f8`](https://github.com/kmplngj/Felucca/commit/bca6e993345287c9c82004f81047f1dcf48ae9f8)
+with the documented `gen_legacy.c` commands. The existing historical inputs remain covered, including an explicit 111-parameter
+project; new AT/ATDST/ATAMT fields default to zero and E0–E7 move to 106–113. To reproduce from a clean, generated standard producer:
+
+```sh
+cc -O1 -w -I"$FELUCCA_ROOT/build/gen" -I"$FELUCCA_ROOT/firmware/src" -I"$FELUCCA_ROOT/tests" \
+  -o build/gen_legacy gen_legacy.c -lm
+build/gen_legacy tables 'kmplngj/Felucca bca6e993345287c9c82004f81047f1dcf48ae9f8' > app/src/legacy_tables.js
+build/gen_legacy vectors > legacy_vectors.json
+FELUCCA_ROOT="$FELUCCA_ROOT" node test_legacy.mjs
+```
+
+The shared 114 mock descriptors follow upstream aftertouch commit
+[`1d431e4d206464d98cefd1e35107c0aaeabe20ee`](https://github.com/hugelton/Felucca/commit/1d431e4d206464d98cefd1e35107c0aaeabe20ee).
+The default mock now exposes 114 parameters; `makeMockDevice({pcount:111})` retains earlier editing coverage.
+`gen_tokens.py` also adapts the native five-colour source layout while keeping the editor-owned LIGHT palette and
+monochrome active-control colours. Its generated CSS and every text contrast check remain verified against the producer.
 
 ## Licence
 
