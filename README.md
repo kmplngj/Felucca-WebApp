@@ -10,6 +10,33 @@ sent to a server. The site is published at https://hugelton.github.io/Felucca/.
 - `index_pkg.html`, `fm1pkg.js`, `fm1ota.js`, `fm1backup.js` — the installer, the update protocol and the full backup.
 - `make_site.py` — builds the site from these pages and a firmware release.
 
+## Installed firmware build
+
+The editor's connection status shows the reported firmware version and, when available,
+the first eight commit digits (`-dirty` marks local source changes). Open **Settings → System**
+for the full commit, verified PR build, build profile and clean/local-changes state.
+The values come from the connected firmware, never from the selected installer package.
+Text in the System card can be selected and copied.
+
+This uses the read-only QUERY from [Felucca PR #790](https://github.com/kmplngj/Felucca/pull/790),
+negotiated through INFO's `5A 01` capability block. Its optional metadata extension reports
+the PR and compiled profile; the original QUERY still supplies commit and dirty state.
+An older firmware or an unavailable query remains usable and shows **Not reported** for
+missing details. A build without a verified PR association shows **None reported**.
+Feature controls continue to use the existing capabilities and descriptors, independently
+of the build display. No restart or transfer-completion request is sent.
+
+For a browser-only check, run `python3 serve.py` and open
+`http://localhost:8766/test_fixtures/menu/build-identity.html`; expect PASS.
+The mock connection can also be inspected at `app/index.html?mock=1&build=extended`
+(add `&dirty=1` for local changes), `&build=legacy` for the original PR #790 QUERY,
+or without `build` for older firmware. For an FM-1 check, close other MIDI clients and use
+a Web MIDI browser such as Chrome. Connect the USB device, click **Connect**, then **Settings**.
+Compare the System values against that installed artifact's build identity/profile; connect
+a device already running older firmware and confirm its missing details are reported honestly.
+Real USB/device validation is pending.
+
+
 ## Working on it
 
 ```sh
@@ -17,6 +44,7 @@ python3 serve.py            # http://localhost:8766/app/index.html?mock=1
 node test_settings.mjs      # MENU replies, sparse IDs; FELUCCA_ROOT adds actual native settings/backup checks
 node test_menu_order.mjs    # ordered MENU writes during background work, transport failure and close
 node test_app.mjs           # the new editor: device layer, build, tokens, words, icons
+node test_build_identity.mjs # capability-negotiated read-only build identity and older firmware fallback
 node test_web.mjs           # the protocol, samples, packages, the updater (FELUCCA_PROTO=app: the new modules)
 node test_backup.mjs        # the full backup
 node test_project_import.mjs # firmware project bytes, import/restore compatibility guards
@@ -30,6 +58,12 @@ build), `FELUCCA_PALETTES` (`tools/gen_ui_palettes.py`), `FELUCCA_INTERTIGHT`
 (`assets/fonts/InterTight[wght].ttf`, or the identical retained source at `docs/manual/fonts/InterTight[wght].ttf`),
 and `FELUCCA_FIRMWARE` (the firmware checkout root, for icon comparisons; the older `src/` + `tools/` layout is also accepted).
 Without them those checks are skipped.
+
+`FELUCCA_BUILD_IDENTITY_FIXTURE=/path/to/metadata-wire-fixture.json` additionally checks
+the actual C producer's `info`, `legacy` and `extended` SysEx frames in `test_build_identity.mjs`.
+This optional candidate comparison is reported as skipped when absent: the normal CI firmware pin
+predates PR #790. Mock, parser, correlation and connection compatibility checks always run.
+
 
 `gen_icons.py` derives parameter, waveform, MOD and legacy row icons from the firmware.
 Its `MENU_TAB_GLYPHS` input owns the five existing WebApp tab glyphs, independently of

@@ -252,6 +252,10 @@ console.log("backup: PER4/PER6/extended opaque round trips, restore order, prefl
 const installer = readFileSync(new URL("./index_pkg.html", import.meta.url), "utf8");
 const installerInfo = vm.runInNewContext(installer.slice(installer.indexOf("function archiveInfo(a)"), installer.indexOf('$("stock-go").addEventListener')) + ";archiveInfo");
 assert.equal(installerInfo([...prefix.slice(0,-1),16,0x55,1,9,0x4d,1,64,1,0x42,1,3,...tag,0x58,1,7]).backupExtraCaps,7);
+const archivePrefix = [...prefix.slice(0,-1),16,0x55,1,9,0x4d,1,64,1,0x42,1,3,...tag,0x58,1,7];
+for (const caps of [3, 7, 127]) eq(installerInfo([...archivePrefix,0x5A,1,caps]), installerInfo(archivePrefix));
+for (const suffix of [[0x5A], [0x5A,1], [0x5A,2,7]])
+  assert.throws(() => installerInfo([...archivePrefix,...suffix]), /Invalid or unsupported INFO/);
 const fw = process.env.FELUCCA_ROOT;
 if (fw && existsSync(join(fw, "tests/engid_test.c"))) {
   const temp = mkdtempSync(join(tmpdir(), "felucca-catalog-"));

@@ -25,6 +25,7 @@ LOCKED_RUNNER_TIMEOUT = 18 * 60
 INTERTIGHT_SHA256 = "b81b73dcb64df3c230cabade7df6c5773bf863233f24c9ee51087519f1f88b6f"
 PACKAGE_SKIP = "packages: skipped (needs FM-1_v15.fwsc and a felucca/build.py build)"
 CODEC_HEADER_SKIP = "native codec headers: skipped (set FELUCCA_CODEC_ROOT to the pinned PR594 checkout)"
+BUILD_IDENTITY_SKIP = "identity producer fixture: skipped (FELUCCA_BUILD_IDENTITY_FIXTURE unset)"
 CLASSIC_SKIPS = {
     "editor: MENU settings (this editor has none)",
     "FM6 bank: (editor.html has no voice bank sender)",
@@ -69,6 +70,9 @@ def unexpected_skips(text, suite):
     if suite == "legacy":
         # Ordinary CI uses the released/pinned native reference, not the unmerged PR594 codec oracle.
         allowed.add(CODEC_HEADER_SKIP)
+    if suite == "build-identity":
+        # The pinned released firmware predates PR790; candidate runs supply its actual C wire fixture.
+        allowed.add(BUILD_IDENTITY_SKIP)
     return skips, [line for line in skips if line not in allowed and not (
         suite == "classic" and line.removesuffix("skip").strip() in CLASSIC_SKIPS)]
 
@@ -259,6 +263,7 @@ def main():
             ("backup", ["node", "test_backup.mjs"]),
             ("settings", ["node", "test_settings.mjs"]),
             ("app", ["node", "test_app.mjs"]),
+            ("build-identity", ["node", "test_build_identity.mjs"]),
             ("catalog", ["node", "test_catalog.mjs"]),
             ("legacy", ["node", "test_legacy.mjs"]),
         ]:

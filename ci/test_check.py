@@ -18,6 +18,15 @@ from check import firmware_environment, font_input, owned_run, unexpected_skips
 class SkipPolicy(unittest.TestCase):
     CODEC_SKIP = "native codec headers: skipped (set FELUCCA_CODEC_ROOT to the pinned PR594 checkout)"
 
+    def test_candidate_identity_oracle_is_optional_only_in_identity_suite(self):
+        line = "identity producer fixture: skipped (FELUCCA_BUILD_IDENTITY_FIXTURE unset)"
+        for suite in ("build-identity", "app", "classic", "unknown"):
+            with self.subTest(suite=suite):
+                self.assertEqual(unexpected_skips(line, suite),
+                                 ([line], [] if suite == "build-identity" else [line]))
+        changed = line.replace("unset", "failed")
+        self.assertEqual(unexpected_skips(changed, "build-identity"), ([changed], [changed]))
+
     def test_optional_codec_oracle_skip_is_retained_in_legacy_receipt(self):
         log = "vectors: all ok\n" + self.CODEC_SKIP + "\nall ok\n"
         self.assertEqual(unexpected_skips(log, "legacy"), ([self.CODEC_SKIP], []))

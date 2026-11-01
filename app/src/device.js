@@ -7,7 +7,7 @@
 // The behaviour is editor.html's (connect, load, onPush, keepAlive, the 400 ms poll, selfLoad), moved here.
 
 import { captureBackup, captureObject, conditionalProjects, projectFile, putObject, readBackup, readProject, restoreBackup, assertBackupCompatible, RAW_CMD, rawManifest, captureRawObject, captureRawStore } from "../../fm1backup.js";
-import { CMD, F, FLASH_OPT, engineAvailable, catalogLabel, FM6, fm6Bank, midiLearn, Link, parseMotionAll, P_CHORD, SMP, auditionPatch, bank, capturePatch, fromDigital, mixer, parse, paramKeys, readDeviceMenu, readDevicePreferences, req, reservedFm4, startWatch, upName } from "./proto.js";
+import { CMD, F, FLASH_OPT, engineAvailable, catalogLabel, FM6, fm6Bank, midiLearn, Link, parseMotionAll, P_CHORD, SMP, auditionPatch, bank, capturePatch, fromDigital, mixer, parse, paramKeys, readBuildIdentity, readDeviceMenu, readDevicePreferences, req, reservedFm4, startWatch, upName } from "./proto.js";
 
 export const isFelucca = (p) => /felucca/i.test(p.name || "") && p.state !== "disconnected";
 export const P = { LEVEL: 0, SLEN: 29 };
@@ -25,6 +25,7 @@ export class Device {
     this.now = opt.clock || (() => Date.now());
     this.hidden = opt.hidden || (() => false);
     this.handlers = new Map();
+    this.buildIdentity = null;
     this.info = null; this.pdesc = []; this.gdesc = []; this.names = []; this.titles = [];
     this.dump = null; this.steps = []; this.slotUsed = [null, null, null, null]; this.smp = null; this.keys = null;
     this.watch = false; this.v4 = false; this.bank = null; this.sel = 0; this.mix = null; this.song = null;
@@ -99,7 +100,9 @@ export class Device {
     const release = this.beginBusy();
     try {
       /* the first frame after opening the port can be lost: a few tries */
+      this.buildIdentity = null;
       this.info = parse[CMD.INFO](await this.rq(req.info(), { timeout: 500, retries: 3 }));
+      this.buildIdentity = await readBuildIdentity((r, o) => this.rq(r, o), this.info);
       const i = this.info, total = i.pcount + i.gcount;
       this.emit("progress", { what: "info", info: i });
       for (let k = 0; k < i.pcount; k++) { this.emit("progress", { what: "desc", n: k + 1, total }); this.pdesc[k] = await this.descOrNull(0, k); }
